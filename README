@@ -1,0 +1,15 @@
+SysNP
+(C) 2011-2012 Nathaniel Powell
+
+Description:
+SysNP is a CPU instruction set exploration project. The goal is to create a 16-bit RISC instruction set that could (theoretically) support a modern operating system, barring memory constraints. SysNP is a software implimentation of that instruction set.
+
+Features:
+* A 16-bit MIPS-inspired RISC architecture (instruction set incomplete)
+* A command-by-command monitoring interface
+
+Planned Features:
+* I/O
+* A clock generator to drive the CPU, in addition to the stepping interface
+* TLB support for OS memory paging.
+
