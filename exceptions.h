@@ -6,6 +6,7 @@
 /* Exception Classes */
 class GenericException {
 public:
+	GenericException(uint32_t val):_val(val) {}
 	virtual void print() = 0;
 protected:
 	uint32_t _val;

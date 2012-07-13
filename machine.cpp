@@ -13,9 +13,9 @@ Machine::Machine(uint32_t memory_size, char *boot_file) {
 	_registers = _cpu->register_file();
 	_registers_aux = _cpu->register_aux();
 
-	FILE* file = 0;
-	errno_t error = fopen_s(&file, boot_file, "r");
-	if (!error) {
+	FILE* file;
+	file = fopen(boot_file, "r");
+	if (file) {
 		int c;
 		int m = 0;
 		do {
