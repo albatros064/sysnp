@@ -3,23 +3,22 @@
 
 #include <stdint.h>
 
-class CPU;
+#include "cpu_base.h"
 
 class Machine {
 public:
-	Machine(uint32_t,char*);
+	Machine(CPU_Base *, uint8_t *, uint64_t);
 	virtual ~Machine();
 
 	void run();
 
+	static uint8_t *allocate_memory(uint64_t, char *);
+
 protected:
 	uint8_t *_memory;
-	uint32_t _memory_size;
+	uint64_t _memory_size;
 	
-	uint16_t *_registers;
-	uint16_t *_registers_aux;
-
-	CPU *_cpu;
+	CPU_Base *_cpu;
 };
 
 #endif

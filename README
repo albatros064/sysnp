@@ -1,5 +1,5 @@
 sysNP
-(C) 2011-2012 Nathaniel Powell
+(C) 2011-2013 Nathaniel Powell
 
 Description:
 sysNP is a CPU instruction set exploration project. The goal is to create a 16-bit RISC instruction set that could (theoretically) support a modern operating system, barring memory constraints. sysNP is a software implimentation of that instruction set.

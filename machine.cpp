@@ -1,78 +1,134 @@
-#include "cpu.h"
+#include "cpu_base.h"
 #include "machine.h"
 
 #include <stdlib.h>
 #include <stdio.h>
 
-Machine::Machine(uint32_t memory_size, char *boot_file) {
-	_memory = (uint8_t *) malloc(memory_size);
-	if (!_memory)
-		printf("Couldn't allocate %d bytes.\n", memory_size);
-	_cpu = new CPU(_memory, _memory_size);
-
-	_registers = _cpu->register_file();
-	_registers_aux = _cpu->register_aux();
-
-	FILE* file;
-	file = fopen(boot_file, "r");
-	if (file) {
-		int c;
-		int m = 0;
-		do {
-			c = getc(file);
-			_memory[m++] = (uint8_t) c;
-		}
-		while (c != EOF);
-	}
-	else {
-		printf("Couldn't load boot file %s\n", boot_file);
-	}
+Machine::Machine(CPU_Base *cpu, uint8_t *memory, uint64_t memory_size) {
+	_memory = memory;
+	_memory_size = memory_size;
+	_cpu = cpu;
 }
 
 Machine::~Machine() {
 	free(_memory);
+}
 
-	delete _cpu;
-	_cpu = 0;
+uint8_t *Machine::allocate_memory(uint64_t size, char *preload_file) {
+	uint8_t *memory = (uint8_t *) malloc(size);
+
+	if (!memory) {
+		printf("Couldn't allocate %lu bytes.\n", size);
+	}
+	else {
+		FILE* file;
+		file = fopen(preload_file, "r");
+
+		if (file) {
+			int c, m = 0;
+			do {
+				c = getc(file);
+				memory[m++] = (uint8_t) c;
+			}
+			while (c != EOF);
+		}
+		else {
+			printf("Couldn't preload from file %s.\n", preload_file);
+		}
+	}
+
+	return memory;
 }
 
 void Machine::run() {
-	_cpu->reset();
-	char buffer[16];
-	do {
-		uint16_t instruction = _cpu->step();
+	uint8_t instr_length;
+	uint8_t bytes[3] = { _cpu->data_bits() / 8, _cpu->logical_bits() / 8, _cpu->physical_bits() / 8 };
 
-		printf("\n"
-			"+-------------------------+--------------------------------------------------+\n"
-			"|  Instruction:  0x%04x   |  PC: 0x%04x                                      |\n"
-			"+-------------------------+--------------+-----------------------------------+\n"
-			"|                                        |                                   |\n"
-			"|  Registers:                            |  Memory:                          |\n"
-			"|                                        |                                   |\n",
-			instruction, _registers_aux[15] - 2);
-		for (int i = 0; i < 16; i++) {
-			uint16_t _mem = (_registers_aux[15] - 2) % 8;
-			_mem = _registers_aux[15] - 2 - _mem + i * 8;
-			printf(
-				"|  %02d: 0x%04x %02d: 0x%04x     %02d: 0x%04x  |  0x%04x: %02x %02x %02x %02x %02x %02x %02x %02x  |\n",
-				i, _registers[i],
-				i +16, _registers[i + 16],
-				i, _registers_aux[i],
-				_mem,
-				_memory[_mem],
-				_memory[_mem + 1],
-				_memory[_mem + 2],
-				_memory[_mem + 3],
-				_memory[_mem + 4],
-				_memory[_mem + 5],
-				_memory[_mem + 6],
-				_memory[_mem + 7]
-			);
+	char buffer[16];
+
+	uint16_t  register_count[4] = { 0, 0, 0, 0 };
+	uint64_t *registers[2];
+
+	registers[0] = _cpu->register_file(register_count[0]);
+	registers[1] = _cpu->register_aux (register_count[1]);
+
+	register_count[2] = register_count[0] / 16; register_count[0] % 16 ? register_count[2]++ : register_count[2];
+	register_count[3] = register_count[1] / 16; register_count[1] % 16 ? register_count[3]++ : register_count[3];
+
+	char *register_filler = (char *) malloc(bytes[0] * 2 + 8);
+	int i;
+	for (i = 0; i < bytes[0] * 2 + 7; i++) {
+		register_filler[i] = ' ';
+	}
+	register_filler[i] = 0;
+
+	_cpu->reset();
+	do {
+		uint64_t instr_addr = _cpu->step(instr_length);
+
+		printf("\n----\n PC:    0x%0*lx\n Instr: 0x", bytes[1] * 2, instr_addr);
+		for(int i = 0; i < instr_length; i++) {
+			printf("%02x", _memory[instr_addr + i]);
 		}
-		printf(
-			"|                                        |                                   |\n"
-			"+----------------------------------------+-----------------------------------+\n"
-		);
+		printf("\n        %s\n----\n Registers:\n", _cpu->decode(instr_addr) );
+		for (int i = 0; i < 16; i++) {
+			for (int j = 0; j < register_count[2]; j++) {
+				if (j * 16 + i < register_count[0]) {
+					printf(" %03d: 0x%0*lx", j * 16 + i, bytes[0] * 2, registers[0][j * 16 + i]);
+				}
+				else {
+					printf(" %s", register_filler);
+				}
+			}
+
+			printf(" |");
+			for (int j = 0; j < register_count[3]; j++) {
+				if (j * 16 + i < register_count[1]) {
+					printf(" %03d: 0x%0*lx", j * 16 + i, bytes[0] * 2, registers[1][j * 16 + i]);
+				}
+				else {
+					printf(" %s", register_filler);
+				}
+			}
+			printf("\n");
+		}
+
+		printf("----\n Memory:\n");
+		uint64_t stack_pointer = _cpu->stack_pointer() % _memory_size;
+		uint64_t stack_pointer_min = stack_pointer - stack_pointer % 16;
+		uint64_t stack_pointer_max = stack_pointer_min + 256;
+		if (stack_pointer_max >= _memory_size) {
+			stack_pointer_max = _memory_size - 16;
+		}
+
+		for (int i = 0; i < 16; i++) {
+			uint64_t _mem = _cpu->instr_pointer() + i * 16;
+			uint64_t _stk = (stack_pointer_max - i * 16);
+			_mem -= _mem % 16;
+			printf(" 0x%0*lx:", bytes[0] * 2, _mem);
+			for (int j = 0; j < 16; j++) {
+				printf(" %02x", _memory[_mem + j]);
+			}
+
+			printf("  | ");
+
+			if (_stk >= stack_pointer_min) {
+				printf(" 0x%0*lx:", bytes[0] * 2, _stk);
+
+				for (int j = 15; j >= 0; j--) {
+					if (_stk + j < stack_pointer) {
+						printf("   ");
+					}
+					else {
+						printf(" %02x", _memory[_stk + j]);
+					}
+				}
+			}
+
+			printf("\n");
+		}//*/
+		printf("----\n");
+
 		gets(buffer);
 		if (buffer[0] == 'r') {
 			_cpu->reset();
