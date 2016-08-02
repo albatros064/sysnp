@@ -1,23 +1,21 @@
+#include <iostream>
+
 #include "memory.h"
-#include "exceptions.h"
-#include <stdlib.h>
 
-Memory::Memory(uint32_t size):
-_bytes(size) {
-	_data = (uint8_t *) malloc(_bytes);
+namespace sysnp {
 
-	if (!_data) {
-		throw OutOfMemory(size);
-	}
+Memory::Memory() {
 }
 
-Data16_Value& Memory16::operator[](const uint32_t offset) {
-	if (_data == 0) {
-		throw EmptyArray(offset);
-	}
-
-	if (offset > _bytes) {
-		throw ArrayIndexOutOfBounds(offset, _bytes);
-	}
+void Memory::init(Machine &machine, const libconfig::Setting &setting) {
+    std::cout << "Memory::init()" << std::endl;
+}
+void Memory::postInit(Machine &machine) {
+    std::cout << "Memory::postInit()" << std::endl;
+}
+void Memory::clock(NBus &bus) {
+    std::cout << "Memory::clock()" << std::endl;
 }
 
+
+}; // namespace

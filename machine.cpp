@@ -1,19 +1,78 @@
-#include "cpu_base.h"
+#include <libconfig.h++>
+#include <iostream>
+
 #include "machine.h"
+#include "device.h"
+#include "nbus.h"
+#include "memory.h"
 
-#include <stdlib.h>
-#include <stdio.h>
+namespace sysnp {
 
-Machine::Machine(CPU_Base *cpu, uint8_t *memory, uint64_t memory_size) {
-	_memory = memory;
-	_memory_size = memory_size;
-	_cpu = cpu;
+bool Machine::load(std::string configFile) {
+    try {
+        libconfig::Config config;
+        config.readFile(configFile.c_str());
+
+        const libconfig::Setting& configRoot = config.getRoot();
+
+        const libconfig::Setting& cDevices = configRoot["devices"];
+        int deviceCount = cDevices.getLength();
+        for (int i = 0; i < deviceCount; i++) {
+            std::string moduleName;
+            const libconfig::Setting& cDevice = cDevices[i];
+            cDevice.lookupValue("module", moduleName);
+
+            Device *newDevice = this->instanciateDevice(moduleName);
+            if (newDevice) {
+                newDevice->init(*this, cDevice);
+                devices[moduleName] = newDevice;
+            }
+        }
+    }
+    catch (libconfig::ParseException e) {
+        std::cout << "Error in config file \"" << configFile << "\" on line " << e.getLine() << ": " <<
+            e.getError() << std::endl;
+    }
+
+    for (std::map<std::string,Device *>::iterator iter = devices.begin(); iter != devices.end(); iter++) {
+        std::cout << iter->first << std::endl;
+        if (iter->second) {
+            iter->second->postInit(*this);
+        }
+    }
+
+    std::cout << "Done loading" << std::endl;
+
+    return true;
 }
 
-Machine::~Machine() {
-	free(_memory);
+Device *Machine::instanciateDevice(std::string deviceName) {
+    Device *newDevice = 0;
+    if (deviceName.compare("np16") == 0) {
+        //newDevice = new np16;
+    }
+    else if (deviceName.compare("memory") == 0) {
+        newDevice = new Memory;
+    }
+    else if (deviceName.compare("nbus") == 0) {
+        newDevice = new NBus();
+    }
+    return newDevice;
 }
 
+Device *Machine::getDevice(std::string deviceName) {
+    std::map<std::string, Device *>::iterator iter = devices.find(deviceName);
+    if (iter != devices.end()) {
+        return iter->second;
+    }
+
+    return 0;
+}
+
+void Machine::run() {
+}
+
+/*
 uint8_t *Machine::allocate_memory(uint64_t size, char *preload_file) {
 	uint8_t *memory = (uint8_t *) malloc(size);
 
@@ -126,7 +185,7 @@ void Machine::run() {
 			}
 
 			printf("\n");
-		}//*/
+		}//
 		printf("----\n");
 
 		gets(buffer);
@@ -136,4 +195,6 @@ void Machine::run() {
 	}
 	while (buffer[0] != 'q');
 }
+*/
 
+}; // namespace

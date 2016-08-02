@@ -1,25 +1,32 @@
-#ifndef MACHINE_H
-#define MACHINE_H
+#ifndef SYSNP_MACHINE_H
+#define SYSNP_MACHINE_H
 
-#include <stdint.h>
+#include <string>
+#include <map>
 
-#include "cpu_base.h"
+#include "device.h"
+
+namespace sysnp {
+
+class Device;
 
 class Machine {
-public:
-	Machine(CPU_Base *, uint8_t *, uint64_t);
-	virtual ~Machine();
+  public:
+	Machine() {}
+	virtual ~Machine() {}
+
+    bool load(std::string);
+
+    Device *getDevice(std::string);
 
 	void run();
+  private:
+    std::map<std::string,Device *> devices;
 
-	static uint8_t *allocate_memory(uint64_t, char *);
-
-protected:
-	uint8_t *_memory;
-	uint64_t _memory_size;
-	
-	CPU_Base *_cpu;
+    Device *instanciateDevice(std::string);
 };
+
+}; // namepsace
 
 #endif
 

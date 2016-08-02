@@ -1,14 +1,17 @@
-objects = main.o machine.o cpu_base.o np16_2.o
+objects = main.o machine.o memory.o nbus.o
+
+CPPFLAGS=-std=c++11
 
 sysnp: $(objects)
-	g++ -o sysnp $(objects)
+	g++ -o sysnp $(objects) $(CPPFLAGS) -lconfig++ -lvncserver
 
-main.o: cpu_base.h machine.h np16_2.h
-machine.o: cpu_base.h machine.h
-cpu_base.o: cpu_base.h
-np16_2.o: np16_2.h
+main.o: machine.h
+machine.o: nbus.h machine.h
+memory.o: memory.h
+nbus.o: nbus.h
 
-np16_2.h: cpu_base.h
+nbus.h: device.h
+memory.h: nbus.h
 
 .PHONY: clean
 clean:
