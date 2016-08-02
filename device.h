@@ -10,8 +10,13 @@ class Machine;
 
 class Device {
   public:
-    virtual void init(Machine&, const libconfig::Setting &) = 0;
-    virtual void postInit(Machine&) = 0;
+    Device() {}
+    virtual ~Device() {}
+    virtual void init(Machine*, const libconfig::Setting &) = 0;
+    virtual void postInit() = 0;
+
+  protected:
+    Machine *machine;
 };
 
 }; // namespace

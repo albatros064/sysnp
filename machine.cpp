@@ -1,5 +1,6 @@
 #include <libconfig.h++>
 #include <iostream>
+#include <fstream>
 
 #include "machine.h"
 #include "device.h"
@@ -9,11 +10,14 @@
 namespace sysnp {
 
 bool Machine::load(std::string configFile) {
+    debugLevel = -1;
     try {
         libconfig::Config config;
         config.readFile(configFile.c_str());
 
         const libconfig::Setting& configRoot = config.getRoot();
+
+        configRoot.lookupValue("debugLevel", debugLevel);
 
         const libconfig::Setting& cDevices = configRoot["devices"];
         int deviceCount = cDevices.getLength();
@@ -24,24 +28,25 @@ bool Machine::load(std::string configFile) {
 
             Device *newDevice = this->instanciateDevice(moduleName);
             if (newDevice) {
-                newDevice->init(*this, cDevice);
+                newDevice->init(this, cDevice);
                 devices[moduleName] = newDevice;
             }
         }
     }
     catch (libconfig::ParseException e) {
-        std::cout << "Error in config file \"" << configFile << "\" on line " << e.getLine() << ": " <<
-            e.getError() << std::endl;
+        debugLevel = 1;
+        debug(1, "Error in config file \"" + configFile + "\" on line " + std::to_string(e.getLine()) +  ": " + e.getError());
+        return false;
     }
 
     for (std::map<std::string,Device *>::iterator iter = devices.begin(); iter != devices.end(); iter++) {
-        std::cout << iter->first << std::endl;
         if (iter->second) {
-            iter->second->postInit(*this);
+            iter->second->postInit();
         }
     }
 
-    std::cout << "Done loading" << std::endl;
+    
+    debug("Done loading");
 
     return true;
 }
@@ -55,7 +60,7 @@ Device *Machine::instanciateDevice(std::string deviceName) {
         newDevice = new Memory;
     }
     else if (deviceName.compare("nbus") == 0) {
-        newDevice = new NBus();
+        newDevice = new NBus;
     }
     return newDevice;
 }
@@ -67,6 +72,27 @@ Device *Machine::getDevice(std::string deviceName) {
     }
 
     return 0;
+}
+
+bool Machine::readFile(std::string fileName, uint8_t *dest, uint32_t limit) {
+    std::ifstream fs;
+    fs.open(fileName);
+    std::filebuf *buffer = fs.rdbuf();
+
+    buffer->sgetn((char*)dest, limit);
+
+    fs.close();
+
+    return true;
+}
+
+void Machine::debug(std::string message) {
+    debug(3, message);
+}
+void Machine::debug(int level, std::string message) {
+    if (debugLevel >= level) {
+        std::cout << "DEBUG[" << level << "]: " << message << std::endl;
+    }
 }
 
 void Machine::run() {

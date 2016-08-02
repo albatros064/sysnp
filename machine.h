@@ -19,9 +19,15 @@ class Machine {
 
     Device *getDevice(std::string);
 
+    bool readFile(std::string,uint8_t*,uint32_t);
+
 	void run();
+
+    void debug(int,std::string);
+    void debug(std::string);
   private:
     std::map<std::string,Device *> devices;
+    int debugLevel;
 
     Device *instanciateDevice(std::string);
 };
