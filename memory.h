@@ -25,10 +25,16 @@ class Memory : public NBusDevice {
     uint8_t *data;
     int deviceAddress;
 
+    int status;
+    uint16_t dataLatch;
+    uint32_t addressLatch;
+
     bool        biosEnabled;
     std::string biosFile;
     uint32_t    biosAddress;
     uint8_t    *biosData;
+
+    void deviceCommand(NBus &);
 };
 
 }; // namespace

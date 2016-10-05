@@ -56,13 +56,13 @@ uint16_t NBus::busData(bool set, uint16_t value) {
 
 bool NBus::busRead(bool set, bool value) {
     if (set) {
-        drive(ReadEnable, value ? 0 : 1);
+        drive(ReadEnable, value ? 1 : 0);
     }
-    return sense(ReadEnable) > 0 ? true : false;
+    return sense(ReadEnable) > 0;
 }
 bool NBus::busWrite(bool set, bool value) {
     if (set) {
-        drive(WriteEnable, value ? 0 : 1);
+        drive(WriteEnable, value ? 1 : 0);
     }
     return sense(WriteEnable) > 0 ? true : false;
 }

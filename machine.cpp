@@ -6,6 +6,7 @@
 #include "device.h"
 #include "nbus.h"
 #include "memory.h"
+#include "util.h"
 
 namespace sysnp {
 
@@ -54,7 +55,7 @@ bool Machine::load(std::string configFile) {
 Device *Machine::instanciateDevice(std::string deviceName) {
     Device *newDevice = 0;
     if (deviceName.compare("np16") == 0) {
-        //newDevice = new np16;
+        newDevice = new Np16;
     }
     else if (deviceName.compare("memory") == 0) {
         newDevice = new Memory;
@@ -96,34 +97,60 @@ void Machine::debug(int level, std::string message) {
 }
 
 void Machine::run() {
+    debug("");
+    debug("Fetching bus device");
+    NBus *bus = (NBus *) getDevice("nbus");
+
+    char command;
+    bool running = true;
+
+    debug("Entering loop");
+    debug("");
+    while (running) {
+        std::cout << "? ";
+        std::cin >> command;
+        switch (command) {
+          case 'q':
+            running = false;
+            break;
+          case 'c':
+            bus->clock();
+            break;
+          case 'b':
+            std::cout << "A: " << to_hex(bus->busAddress()) << std::endl;
+            std::cout << "D: " << to_hex(bus->busData()) << std::endl;
+            std::cout << "W: " << bus->busWrite() << " R: " << bus->busRead() << std::endl;
+            break;
+          case 'n':
+            {
+            uint32_t add;
+            uint16_t dat;
+            bool w = false;
+            bool r = false;
+
+            std::cout << "A: ";
+            std::cin >> add;
+            std::cout << "D: ";
+            std::cin >> dat;
+            std::cout << "W: ";
+            std::cin >> w;
+            std::cout << "R: ";
+            std::cin >> r;
+            bus->busAddress(true, add);
+            bus->busData(true, dat);
+            bus->busWrite(true, w);
+            bus->busRead (true, r);
+            }
+            break;
+          default:
+            break;
+        }
+    }
+
+    debug("Exiting");
 }
 
 /*
-uint8_t *Machine::allocate_memory(uint64_t size, char *preload_file) {
-	uint8_t *memory = (uint8_t *) malloc(size);
-
-	if (!memory) {
-		printf("Couldn't allocate %lu bytes.\n", size);
-	}
-	else {
-		FILE* file;
-		file = fopen(preload_file, "r");
-
-		if (file) {
-			int c, m = 0;
-			do {
-				c = getc(file);
-				memory[m++] = (uint8_t) c;
-			}
-			while (c != EOF);
-		}
-		else {
-			printf("Couldn't preload from file %s.\n", preload_file);
-		}
-	}
-
-	return memory;
-}
 
 void Machine::run() {
 	uint8_t instr_length;
