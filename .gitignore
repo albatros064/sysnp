@@ -1,3 +1,4 @@
-sysnp
-*.o
 *.swp
+*.swo
+
+build/

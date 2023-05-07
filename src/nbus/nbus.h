@@ -2,13 +2,16 @@
 #define SYSNP_NBUS_H
 
 #include <string>
+#include <sstream>
 #include <memory>
 #include <array>
 #include <vector>
 
-#include "device.h"
+#include "../device.h"
 
 namespace sysnp {
+
+namespace nbus {
 
 using std::string;
 
@@ -39,17 +42,16 @@ class NBus : public Device , public std::enable_shared_from_this<NBus>  {
         void addInterface(std::shared_ptr<NBusInterface>);
         std::shared_ptr<NBusInterface> getIndependentInterface();
 
-        virtual void init(std::shared_ptr<Machine>, const libconfig::Setting &);
+        virtual void init(const libconfig::Setting &);
         virtual void postInit();
-        virtual std::string output(uint8_t);
+
+        virtual std::string command(std::stringstream&);
     private:
         std::vector<std::shared_ptr<NBusInterface>> interfaces;
         std::vector<std::string> deviceNames;
         std::array<uint32_t, NBusSignal::NotReady + 1> signalMasks;
 
         std::shared_ptr<NBusInterface> selfInterface;
-
-        std::shared_ptr<Machine> machine;
 };
 
 class NBusInterface {
@@ -75,6 +77,8 @@ class NBusDevice : public Device {
     protected:
         std::shared_ptr<NBusInterface> interface;
 };
+
+}; // namespace nbus
 
 }; // namespace sysnp
 #endif

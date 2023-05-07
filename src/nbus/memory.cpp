@@ -3,17 +3,12 @@
 #include <array>
 
 #include "memory.h"
-#include "util.h"
 
 namespace sysnp {
 
-Memory::Memory():status(MemoryStatus::Ready) {}
+namespace nbus {
 
-Memory::~Memory() {}
-
-void Memory::init(std::shared_ptr<Machine> machine, const libconfig::Setting &setting) {
-    this->machine = machine;
-
+void Memory::init(const libconfig::Setting &setting) {
     const libconfig::Setting &moduleConfig = setting["modules"];
     int moduleCount = moduleConfig.getLength();
     uint32_t    start;
@@ -21,6 +16,7 @@ void Memory::init(std::shared_ptr<Machine> machine, const libconfig::Setting &se
     uint32_t readLatency;
     uint32_t writeLatency;
     bool        rom;
+    std::string name;
     std::string file;
 
     setting.lookupValue("ioHole", ioHoleAddress);
@@ -30,13 +26,14 @@ void Memory::init(std::shared_ptr<Machine> machine, const libconfig::Setting &se
     for (int i = 0; i < moduleCount; i++) {
         const libconfig::Setting &module = moduleConfig[i];
         module.lookupValue("start",         start);
+        module.lookupValue("name",          name);
         module.lookupValue("size",          size);
         module.lookupValue("rom",           rom);
         module.lookupValue("file",          file);
         module.lookupValue("readLatency",   readLatency);
         module.lookupValue("writeLatency",  writeLatency);
 
-        modules.push_back(std::make_shared<MemoryModule>(start, size * 1024, rom, file, readLatency, writeLatency));
+        modules.push_back(std::make_shared<MemoryModule>(start, size * 1024, rom, file, readLatency, writeLatency, name));
 
         capacity += size;
     }
@@ -64,8 +61,10 @@ void Memory::clockUp() {
             writeLatch = write;
 
             if (addressLatch < ioHoleAddress || addressLatch >= (ioHoleAddress + ioHoleSize)) {
+                machine->debug("Memory - not in io hole");
                 for (auto module: modules) {
                     if (module->containsAddress(addressLatch)) {
+                        machine->debug("Memory - handled by module " + module->getName());
                         selectedModule = module;
                         latency = 0;
                         if (read) {
@@ -82,6 +81,9 @@ void Memory::clockUp() {
                         break;
                     }
                 }
+            }
+            else {
+                machine->debug("Memory - address in io hole. Skipping");
             }
         }
     }
@@ -120,12 +122,12 @@ void Memory::clockDown() {
     }
 }
 
-std::string Memory::output(uint8_t mode) {
-    return "";
+std::string Memory::command(std::stringstream &input)  {
+    return "Ok.";
 }
 
-MemoryModule::MemoryModule(uint32_t start, uint32_t size, bool rom, std::string romFile, uint8_t readLatency, uint8_t writeLatency):
-        startAddress(start), size(size), rom(rom), readLatency(readLatency), writeLatency(writeLatency) {
+MemoryModule::MemoryModule(uint32_t start, uint32_t size, bool rom, std::string romFile, uint8_t readLatency, uint8_t writeLatency, std::string name):
+        startAddress(start), size(size), rom(rom), readLatency(readLatency), writeLatency(writeLatency), name(name) {
     data = new uint8_t[size];
     if (rom) {
         
@@ -140,6 +142,9 @@ MemoryModule::~MemoryModule() {
 
 bool MemoryModule::containsAddress(uint32_t address) {
     return address >= startAddress && address < (startAddress + size);
+}
+std::string MemoryModule::getName() {
+    return name;
 }
 uint8_t MemoryModule::getReadLatency() {
     return readLatency;
@@ -161,4 +166,6 @@ void MemoryModule::write(uint32_t address, uint8_t datum) {
     data[address - startAddress] = datum;
 }
 
-}; // namespace
+}; // namespace nbus
+
+}; // namespace sysnp

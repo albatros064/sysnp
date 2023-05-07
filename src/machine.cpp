@@ -1,14 +1,14 @@
 #include <libconfig.h++>
 #include <iostream>
+#include <sstream>
 #include <iomanip>
-#include <bitset>
 #include <fstream>
 
 #include "machine.h"
 #include "device.h"
-#include "nbus.h"
-#include "memory.h"
-#include "util.h"
+#include "nbus/nbus.h"
+#include "nbus/memory.h"
+#include "nbus/cpu/n16r.h"
 
 namespace sysnp {
 
@@ -34,7 +34,8 @@ bool Machine::load(std::string configFile) {
             std::shared_ptr<Device> newDevice = this->createDevice(moduleName);
             if (newDevice) {
                 debug("Initializing device type \"" + moduleName + "\"");
-                newDevice->init(shared_from_this(), cDevice);
+                newDevice->setMachine(shared_from_this());
+                newDevice->init(cDevice);
                 devices[moduleName] = newDevice;
             }
         }
@@ -62,14 +63,14 @@ bool Machine::load(std::string configFile) {
 
 std::shared_ptr<Device> Machine::createDevice(std::string deviceName) {
     std::shared_ptr<Device> newDevice;
-    if (deviceName.compare("np16") == 0) {
-        //newDevice = std::make_shared<Np16>();
+    if (deviceName.compare("n16r") == 0) {
+        newDevice = std::make_shared<nbus::n16r::N16R>();
     }
     else if (deviceName.compare("memory") == 0) {
-        newDevice = std::make_shared<Memory>();
+        newDevice = std::make_shared<nbus::Memory>();
     }
     else if (deviceName.compare("nbus") == 0) {
-        newDevice = std::make_shared<NBus>();
+        newDevice = std::make_shared<nbus::NBus>();
     }
     return newDevice;
 }
@@ -108,8 +109,7 @@ void Machine::run() {
     char commandBuffer[255];
     debug("");
     debug("Fetching bus device");
-    std::shared_ptr<NBus> bus = std::static_pointer_cast<NBus>(getDevice("nbus"));
-    std::shared_ptr<NBusInterface> busInterface = bus->getIndependentInterface();
+    std::shared_ptr<nbus::NBus> bus = std::static_pointer_cast<nbus::NBus>(getDevice("nbus"));
 
     std::string command;
     std::string commandWord;
@@ -130,9 +130,8 @@ void Machine::run() {
             running = false;
         }
         else if (command == "clock") {
-            if (!std::getline(cs, commandWord, ' ')) {
-                commandWord = "pulse";
-            }
+            commandWord = "pulse";
+            cs >> commandWord;
 
             if (commandWord == "pulse") {
                 bus->clockUp();
@@ -158,79 +157,23 @@ void Machine::run() {
             }
         }
         else if (command == "bus") {
-            commandWord = "all";
-            cs >> commandWord;
-
-            uint32_t setValue = 0xffffffff;
-            std::stringstream stream;
-
-            if (commandWord == "r" || commandWord == "release") {
-                busInterface->deassert(NBusSignal::Address);
-                busInterface->deassert(NBusSignal::Data);
-                busInterface->deassert(NBusSignal::ReadEnable);
-                busInterface->deassert(NBusSignal::WriteEnable);
-                busInterface->deassert(NBusSignal::Interrupt0);
-                busInterface->deassert(NBusSignal::Interrupt1);
-                busInterface->deassert(NBusSignal::Interrupt2);
-                busInterface->deassert(NBusSignal::Interrupt3);
-                busInterface->deassert(NBusSignal::NotReady);
-                stream << "Ok.";
-            }
-            else if (commandWord == "address") {
-                cs >> setValue;
-                if (setValue != 0xffffffff) {
-                    busInterface->assert(NBusSignal::Address, setValue);
-                    stream << "Ok.";
-                }
-                else {
-                    stream << "0" << std::setw(8) << std::setfill('0') << std::oct;
-                    stream << busInterface->sense(NBusSignal::Address);
-                }
-            }
-            else if (commandWord == "data") {
-                cs >> setValue;
-                if (setValue != 0xffffffff) {
-                    busInterface->assert(NBusSignal::Data, setValue);
-                    stream << "Ok.";
-                }
-                else {
-                    stream << "0" << std::setw(6) << std::setfill('0') << std::oct;
-                    stream << busInterface->sense(NBusSignal::Data);
-                }
-            }
-            else if (commandWord == "read") {
-                cs >> setValue;
-                if (setValue != 0xffffffff) {
-                    busInterface->assert(NBusSignal::ReadEnable, setValue);
-                    stream << "Ok.";
-                }
-                else {
-                    stream << "0b" << std::bitset<2>(busInterface->sense(NBusSignal::ReadEnable));
-                }
-            }
-            else if (commandWord == "write") {
-                cs >> setValue;
-                if (setValue != 0xffffffff) {
-                    busInterface->assert(NBusSignal::WriteEnable, setValue);
-                    stream << "Ok.";
-                }
-                else {
-                    stream << "0b" << std::bitset<2>(busInterface->sense(NBusSignal::WriteEnable));
-                }
-            }
-            else {
-                stream << "ADDR----- DATA--- WR RD INT- R" << std::endl;
-                stream << "0" << std::setfill('0') << std::setw(8) << std::oct << busInterface->sense(NBusSignal::Address    ) << " ";
-                stream << "0" << std::setw(6) << busInterface->sense(NBusSignal::Data       ) << " " << std::setbase(10);
-                stream << std::bitset<2>(busInterface->sense(NBusSignal::WriteEnable)) << " ";
-                stream << std::bitset<2>(busInterface->sense(NBusSignal::ReadEnable )) << " ";
-                stream << busInterface->sense(NBusSignal::Interrupt0) << busInterface->sense(NBusSignal::Interrupt1);
-                stream << busInterface->sense(NBusSignal::Interrupt2) << busInterface->sense(NBusSignal::Interrupt3) << " ";
-                stream << busInterface->sense(NBusSignal::NotReady);
-            }
-            std::cout << stream.str() << std::endl;
+            std::cout << bus->command(cs) << std::endl;
         }
         else if (command == "dev") {
+            commandWord = "";
+            cs >> commandWord;
+            if (commandWord.empty()) {
+                std::cout << "Invalid device." << std::endl;
+            }
+            else {
+                auto device = getDevice(commandWord);
+                if (device) {
+                    std::cout << device->command(cs) << std::endl;
+                }
+                else {
+                    std::cout << "Invalid device." << std::endl;
+                }
+            }
         }
         else if (command == "config") {
             cs >> commandWord;

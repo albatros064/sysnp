@@ -2,10 +2,13 @@
 #define SYSNP_MEMORY_H
 
 #include <string>
+#include <sstream>
 
 #include "nbus.h"
 
 namespace sysnp {
+
+namespace nbus {
 
 enum MemoryStatus {
     Ready,
@@ -18,19 +21,17 @@ class MemoryModule;
 
 class Memory : public NBusDevice {
   public:
-    Memory();
-    virtual ~Memory();
+    Memory() {}
+    virtual ~Memory() {}
 
-    virtual void init(std::shared_ptr<Machine>, const libconfig::Setting &);
+    virtual void init(const libconfig::Setting &);
     virtual void postInit();
 
     virtual void clockUp();
     virtual void clockDown();
 
-    virtual std::string output(uint8_t);
-
+    virtual std::string command(std::stringstream&);
   private:
-    std::shared_ptr<Machine> machine;
     std::vector<std::shared_ptr<MemoryModule>> modules;
     std::shared_ptr<MemoryModule> selectedModule;
 
@@ -48,10 +49,11 @@ class Memory : public NBusDevice {
 
 class MemoryModule {
     public:
-        MemoryModule(uint32_t, uint32_t, bool, std::string, uint8_t, uint8_t);
+        MemoryModule(uint32_t, uint32_t, bool, std::string, uint8_t, uint8_t, std::string);
         ~MemoryModule();
 
         bool containsAddress(uint32_t);
+        std::string getName();
         uint8_t getReadLatency();
         uint8_t getWriteLatency();
 
@@ -64,9 +66,13 @@ class MemoryModule {
         uint8_t writeLatency;
         uint8_t *data;
         bool rom;
+
+        std::string name;
 };
 
-}; // namespace
+}; // namespace nbus
+
+}; // namespace sysnp
 
 #endif
 
