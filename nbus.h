@@ -2,6 +2,7 @@
 #define SYSNP_NBUS_H
 
 #include <string>
+#include <memory>
 #include <array>
 #include <vector>
 
@@ -11,45 +12,68 @@ namespace sysnp {
 
 using std::string;
 
-class NBus;
-
-class NBusDevice : public Device {
-  public:
-    NBusDevice() {}
-    virtual ~NBusDevice() {}
-    virtual void clock(NBus&) = 0;
-
-  protected:
-    uint32_t deviceAddress;
+enum NBusSignal {
+    Address,
+    Data,
+    WriteEnable,
+    ReadEnable,
+    Interrupt0,
+    Interrupt1,
+    Interrupt2,
+    Interrupt3,
+    NotReady,
 };
 
-class NBus : public Device {
-  public:
-    NBus();
-    virtual ~NBus() {};
-    virtual void init(Machine *, const libconfig::Setting &);
-    virtual void postInit();
+class NBusInterface;
 
-    enum Signal { Address, Data, WriteEnable, ReadEnable, InterruptA, InterruptB, InterruptC, InterruptD };
+class NBus : public Device , public std::enable_shared_from_this<NBus>  {
+    public:
+        NBus();
+        virtual ~NBus() {}
 
-    uint32_t busAddress(bool =false, uint32_t =0); // only 24 bits actual address
-    uint16_t busData   (bool =false, uint16_t =0);
-    bool     busWrite  (bool =false, bool =false);
-    bool     busRead   (bool =false, bool =false);
+        virtual void clockUp  ();
+        virtual void clockDown();
 
-    void clock();
+        uint32_t sense(NBusSignal);
 
-  private:
-    std::array<uint32_t,Signal::InterruptD + 1> signals;
-    std::array<uint32_t,Signal::InterruptD + 1> nextSignals;
-    std::vector<NBusDevice *> devices;
+        void addInterface(std::shared_ptr<NBusInterface>);
+        std::shared_ptr<NBusInterface> getIndependentInterface();
 
-    std::vector<string> deviceNames;
-    uint32_t deviceAddress;
-    uint32_t clockFrequency;
+        virtual void init(std::shared_ptr<Machine>, const libconfig::Setting &);
+        virtual void postInit();
+        virtual std::string output(uint8_t);
+    private:
+        std::vector<std::shared_ptr<NBusInterface>> interfaces;
+        std::vector<std::string> deviceNames;
+        std::array<uint32_t, NBusSignal::NotReady + 1> signalMasks;
 
-    void drive(Signal, uint32_t);
-    uint32_t sense(Signal);
+        std::shared_ptr<NBusInterface> selfInterface;
+
+        std::shared_ptr<Machine> machine;
+};
+
+class NBusInterface {
+    public:
+        NBusInterface(std::shared_ptr<NBus>, std::shared_ptr<Device>);
+        virtual ~NBusInterface() {};
+        void assert(NBusSignal, uint32_t);
+        void deassert(NBusSignal);
+        uint32_t sense(NBusSignal);
+
+        virtual void clockUp  ();
+        virtual void clockDown();
+    private:
+        std::array<uint32_t, NBusSignal::NotReady + 1> signals;
+        std::shared_ptr<NBus> bus;
+        std::shared_ptr<Device> device;
+        friend uint32_t NBus::sense(NBusSignal);
+};
+
+class NBusDevice : public Device {
+    public:
+        void setInterface(std::shared_ptr<NBusInterface> newInterface) { this->interface = newInterface; }
+    protected:
+        std::shared_ptr<NBusInterface> interface;
 };
 
 }; // namespace sysnp

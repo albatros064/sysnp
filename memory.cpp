@@ -7,124 +7,158 @@
 
 namespace sysnp {
 
-Memory::Memory():capacity(0),deviceAddress(0x1f0000),biosEnabled(true),data(0),biosData(0),status(-1) {
-}
+Memory::Memory():status(MemoryStatus::Ready) {}
 
-Memory::~Memory() {
-    if (data != 0) {
-        delete data;
-    }
-    if (biosData != 0) {
-        delete biosData;
-    }
-    data = 0;
-    biosData = 0;
-}
+Memory::~Memory() {}
 
-void Memory::init(Machine *machine, const libconfig::Setting &setting) {
+void Memory::init(std::shared_ptr<Machine> machine, const libconfig::Setting &setting) {
     this->machine = machine;
-    const libconfig::Setting &modules = setting["modules"];
-    int moduleCount = modules.getLength();
-    for (int i = 0; i < moduleCount; i++) {
-        int moduleSize = 0;
-        modules[i].lookupValue("capacity", moduleSize);
-        capacity += moduleSize;
-    }
-    setting.lookupValue("device", deviceAddress);
 
-    setting.lookupValue("file", biosFile);
-    setting.lookupValue("bios", biosAddress);
+    const libconfig::Setting &moduleConfig = setting["modules"];
+    int moduleCount = moduleConfig.getLength();
+    uint32_t    start;
+    uint32_t    size;
+    uint32_t readLatency;
+    uint32_t writeLatency;
+    bool        rom;
+    std::string file;
+
+    setting.lookupValue("ioHole", ioHoleAddress);
+    setting.lookupValue("ioHoleSize", ioHoleSize);
+
+    uint32_t capacity = 0;
+    for (int i = 0; i < moduleCount; i++) {
+        const libconfig::Setting &module = moduleConfig[i];
+        module.lookupValue("start",         start);
+        module.lookupValue("size",          size);
+        module.lookupValue("rom",           rom);
+        module.lookupValue("file",          file);
+        module.lookupValue("readLatency",   readLatency);
+        module.lookupValue("writeLatency",  writeLatency);
+
+        modules.push_back(std::make_shared<MemoryModule>(start, size * 1024, rom, file, readLatency, writeLatency));
+
+        capacity += size;
+    }
 
     machine->debug("Memory::init()");
     machine->debug(" Found " + std::to_string(moduleCount) + " modules for " + std::to_string(capacity) + "KB");
-    machine->debug(" Found bios file \"" + biosFile + "\", located at " + sysnp::to_hex(biosAddress, true));
 }
-void Memory::postInit() {
-    machine->debug("Memory::postInit()");
 
-    data = new uint8_t[capacity * 1024];
-    if (data != 0) {
-        machine->debug(" Allocated " + std::to_string(capacity) + "KB RAM");
-    }
+void Memory::postInit() {}
 
-    biosData = new uint8_t[0x10000];
-    if (biosData != 0) {
-        machine->debug(" Allocated 64KB ROM");
-        // Load bios file into ROM
-        machine->readFile(biosFile, biosData, 0x10000);
-        machine->debug("Loaded bios ROM from \"" + biosFile + "\"");
-    }
-}
-void Memory::clock(NBus &bus) {
-    machine->debug("Memory::clock()");
+void Memory::clockUp() {
+    machine->debug("Memory::clockUp()");
 
-    bool read = bus.busRead();
-    bool write = bus.busWrite();
+    uint32_t read  = interface->sense(NBusSignal::ReadEnable);
+    uint32_t write = interface->sense(NBusSignal::WriteEnable);
 
     // Are we in a position to respond to bus activity?
-    if (status < 0) {
+    if (status == MemoryStatus::Ready) {
         machine->debug("Latching bus lines");
         if (read || write) {
             machine->debug("Read or write requested");
-            addressLatch = bus.busAddress();
-            dataLatch    = bus.busData();
-            status = -1;
+            addressLatch = interface->sense(NBusSignal::Address) & 0xffffffffe;
+            dataLatch    = interface->sense(NBusSignal::Data   );
+            readLatch = read;
+            writeLatch = write;
 
-            if (addressLatch < 0x1f0000 || addressLatch >= 0x400000) {
-                // this is a general memory read/write
-                if (biosEnabled && addressLatch >= biosAddress && addressLatch < biosAddress + 0x10000) {
-                    // this is a read from the bios rom
-                    addressLatch -= biosAddress;
-                    status = 1;
+            if (addressLatch < ioHoleAddress || addressLatch >= (ioHoleAddress + ioHoleSize)) {
+                for (auto module: modules) {
+                    if (module->containsAddress(addressLatch)) {
+                        selectedModule = module;
+                        latency = 0;
+                        if (read) {
+                            status = MemoryStatus::ReadLatency;
+                            latency = module->getReadLatency();
+                        }
+                        else if (write) {
+                            status = MemoryStatus::WriteLatency;
+                            latency = module->getWriteLatency();
+                        }
+                        else {
+                            latency = 0;
+                        }
+                        break;
+                    }
                 }
-                status += 10;
-                if (write) {
-                    status++;
-                }
-            }
-            else if ((addressLatch & ~0xf) == deviceAddress) {
-                // this is a command directed at us
-                deviceCommand(bus);
             }
         }
     }
-    else {
-        if (status > 5) {
-            machine->debug("Latency cycle");
-            status -= 3;
-            // are we trying to write to bios rom?
-            if (status == 9) {
-                // we've waited a cycle. ready for the next command
-                status = -1;
-            }
-        }
-        else if (status == 4) {
-            machine->debug("Write cycle");
-            data[addressLatch] = dataLatch;
-            status = -1;
+}
+
+void Memory::clockDown() {
+    machine->debug("Memory::clockDown()");
+    if (status != MemoryStatus::Ready && status != MemoryStatus::Cleanup) {
+        if (latency > 0) {
+            interface->assert(NBusSignal::NotReady, 1);
+            --latency;
         }
         else {
-            machine->debug("Burst cycle");
-            if (dataLatch < 1) {
-                status = -1;
+            interface->deassert(NBusSignal::NotReady);
+            if (status == MemoryStatus::ReadLatency) {
+                uint16_t data = selectedModule->read(addressLatch);
+                data |= selectedModule->read(addressLatch + 1) << 8;
+                interface->assert(NBusSignal::Data, data);
             }
-            else {
-                uint16_t *d = (uint16_t*) data;
-                if (status == 5) {
-                    d = (uint16_t*) biosData;
+            else if (status == MemoryStatus::WriteLatency) {
+                if (writeLatch & 1) {
+                    selectedModule->write(addressLatch, dataLatch & 0xff);
                 }
-                // burst data onto the bus
-                bus.busAddress(true, addressLatch);
-                bus.busData   (true, d[addressLatch]);
-                addressLatch += 2;
-                dataLatch    -= 1;
+                if (writeLatch & 2) {
+                    selectedModule->write(addressLatch + 1, (dataLatch >> 8) & 0xff);
+                }
             }
+            status = MemoryStatus::Cleanup;
         }
+    }
+    else if (status == MemoryStatus::Cleanup) {
+        interface->deassert(NBusSignal::Data);
+        interface->deassert(NBusSignal::NotReady);
+
+        status = MemoryStatus::Ready;
     }
 }
 
-void Memory::deviceCommand(NBus &bus) {
+std::string Memory::output(uint8_t mode) {
+    return "";
 }
 
+MemoryModule::MemoryModule(uint32_t start, uint32_t size, bool rom, std::string romFile, uint8_t readLatency, uint8_t writeLatency):
+        startAddress(start), size(size), rom(rom), readLatency(readLatency), writeLatency(writeLatency) {
+    data = new uint8_t[size];
+    if (rom) {
+        
+    }
+}
+MemoryModule::~MemoryModule() {
+    if (data != 0) {
+        delete data;
+        data = 0;
+    }
+}
+
+bool MemoryModule::containsAddress(uint32_t address) {
+    return address >= startAddress && address < (startAddress + size);
+}
+uint8_t MemoryModule::getReadLatency() {
+    return readLatency;
+}
+uint8_t MemoryModule::getWriteLatency() {
+    return writeLatency;
+}
+
+uint8_t MemoryModule::read(uint32_t address) {
+    if (address < startAddress || address >= (startAddress + size)) {
+        return 0;
+    }
+    return data[address - startAddress];
+}
+void MemoryModule::write(uint32_t address, uint8_t datum) {
+    if (rom || address < startAddress || address >= (startAddress + size)) {
+        return;
+    }
+    data[address - startAddress] = datum;
+}
 
 }; // namespace

@@ -1,9 +1,9 @@
 out=sysnp
 objects = main.o machine.o memory.o nbus.o util.o
 
-CXX=clang++-3.8
-CPPFLAGS=-std=c++11
-LDFLAGS=-lconfig++ -lvncserver
+CXX=g++
+CPPFLAGS=-g -std=c++11
+LDFLAGS=-g -lconfig++
 
 $(out): $(objects)
 	$(CXX) -o $(out) $(objects) $(CPPFLAGS) $(LDFLAGS)

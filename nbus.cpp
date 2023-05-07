@@ -1,84 +1,104 @@
 #include "nbus.h"
 
+#include <iostream>
+#include <sstream>
+#include <iomanip>
+
 namespace sysnp {
 
-NBus::NBus() {}
+NBusInterface::NBusInterface(std::shared_ptr<NBus> inBus, std::shared_ptr<Device> inDevice):
+        bus(inBus),
+        device(inDevice) {
+    for (unsigned i = 0; i <= NBusSignal::NotReady; i++) {
+        signals[i] = 0;
+    }
+}
 
-void NBus::init(Machine *machine, const libconfig::Setting &config) {
+void NBusInterface::assert(NBusSignal signal, uint32_t value) {
+    signals[signal] = value;
+}
+void NBusInterface::deassert(NBusSignal signal) {
+    assert(signal, 0);
+}
+uint32_t NBusInterface::sense(NBusSignal signal) {
+    return bus->sense(signal);
+}
+
+void NBusInterface::clockUp() {
+    device->clockUp();
+}
+void NBusInterface::clockDown() {
+    device->clockDown();
+}
+
+NBus::NBus() {
+    signalMasks[NBusSignal::Address] = 0xffffff;
+    signalMasks[NBusSignal::Data] = 0xffff;
+    signalMasks[NBusSignal::WriteEnable] = 3;
+    signalMasks[NBusSignal::ReadEnable ] = 3;
+    signalMasks[NBusSignal::Interrupt0] = 1;
+    signalMasks[NBusSignal::Interrupt1] = 1;
+    signalMasks[NBusSignal::Interrupt2] = 1;
+    signalMasks[NBusSignal::Interrupt3] = 1;
+    signalMasks[NBusSignal::NotReady] = 1;
+}
+
+void NBus::init(std::shared_ptr<Machine> machine, const libconfig::Setting &setting) {
     this->machine = machine;
-    machine->debug("NBus::init()");
-    const libconfig::Setting &devices = config["devices"];
-    int connectedDevices = devices.getLength();
-    for (int i = 0; i < connectedDevices; i++) {
-        string deviceName = devices[i];
-        deviceNames.push_back(deviceName);
+    const libconfig::Setting &devices = setting["devices"];
+    int deviceCount = devices.getLength();
+    for (int i = 0; i < deviceCount; i++) {
+        deviceNames.push_back(devices[i]);
     }
-
-    deviceAddress = config["device"];
-    clockFrequency = config["clock"];
 }
-
 void NBus::postInit() {
-    machine->debug("NBus::postInit()");
-    for (string deviceName: deviceNames) {
-        Device *device = machine->getDevice(deviceName);
-        NBusDevice *busDevice = dynamic_cast<NBusDevice *>(device);
-        machine->debug(" Device \"" + deviceName + "\" ");
-        if (busDevice) {
-            machine->debug("  Found");
-            devices.push_back(busDevice);
-        }
-        else if (device) {
-            machine->debug("  Found, but not an NBusDevice. Ignoring.");
-        }
-        else {
-            machine->debug("  Not found. Ignoring.");
+    for (auto deviceName: deviceNames) {
+        machine->debug("NBus: Finding " + deviceName);
+        std::shared_ptr<NBusDevice> device = std::static_pointer_cast<NBusDevice>(machine->getDevice(deviceName));
+        if (device) {
+            std::shared_ptr<NBusInterface> interface = std::make_shared<NBusInterface>(shared_from_this(), device);
+            device->setInterface(interface);
+            addInterface(interface);
         }
     }
-
-    for (int s = Signal::Address; s != Signal::InterruptD; s++) {
-        drive(static_cast<Signal>(s), 0);
-    }
+    selfInterface = std::make_shared<NBusInterface>(shared_from_this(), shared_from_this());
 }
 
-uint32_t NBus::busAddress(bool set, uint32_t value) {
-    if (set) {
-        drive(Address, value & 0x00ffffff);
-    }
-    return sense(Address);
-}
-uint16_t NBus::busData(bool set, uint16_t value) {
-    if (set) {
-        drive(Data, value);
-    }
-    return (uint16_t) sense(Data);
+std::shared_ptr<NBusInterface> NBus::getIndependentInterface() {
+    return selfInterface;
 }
 
-bool NBus::busRead(bool set, bool value) {
-    if (set) {
-        drive(ReadEnable, value ? 1 : 0);
+uint32_t NBus::sense(NBusSignal signal) {
+    uint32_t signalValue = 0;
+
+    for (auto interface: interfaces) {
+        signalValue |= interface->signals[signal];
     }
-    return sense(ReadEnable) > 0;
-}
-bool NBus::busWrite(bool set, bool value) {
-    if (set) {
-        drive(WriteEnable, value ? 1 : 0);
-    }
-    return sense(WriteEnable) > 0 ? true : false;
+
+    signalValue |= selfInterface->signals[signal];
+
+    signalValue &= signalMasks[signal];
+
+    return signalValue;
 }
 
-void NBus::drive(Signal signal, uint32_t value) {
-    nextSignals[signal] = value;
+void NBus::clockUp() {
+    for (auto interface: interfaces) {
+        interface->clockUp();
+    }
 }
-uint32_t NBus::sense(Signal signal) {
-    return signals[signal];
+void NBus::clockDown() {
+    for (auto interface: interfaces) {
+        interface->clockDown();
+    }
 }
 
-void NBus::clock() {
-    signals = nextSignals;
-    for (NBusDevice *device: devices) {
-        device->clock(*this);
-    }
+std::string NBus::output(uint8_t mode) {
+    return "";
+}
+
+void NBus::addInterface(std::shared_ptr<NBusInterface> interface) {
+    interfaces.push_back(interface);
 }
 
 };

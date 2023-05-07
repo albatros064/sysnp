@@ -2,6 +2,8 @@
 #define SYSNP_DEVICE_H
 
 #include <libconfig.h++>
+#include <string>
+#include <memory>
 #include "machine.h"
 
 namespace sysnp {
@@ -10,13 +12,13 @@ class Machine;
 
 class Device {
   public:
-    Device() {}
-    virtual ~Device() {}
-    virtual void init(Machine*, const libconfig::Setting &) = 0;
-    virtual void postInit() = 0;
+    virtual void init(std::shared_ptr<Machine>, const libconfig::Setting &) =0;
+    virtual void postInit() =0;
 
-  protected:
-    Machine *machine;
+    virtual void clockUp  () =0;
+    virtual void clockDown() =0;
+
+    virtual std::string output(uint8_t) =0;
 };
 
 }; // namespace

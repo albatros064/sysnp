@@ -3,10 +3,10 @@
 #include "machine.h"
 
 int main(int argc, char* argv[]) {
-    sysnp::Machine machine;
-    machine.load("hardware.conf");
+    std::shared_ptr<sysnp::Machine> machine = std::make_shared<sysnp::Machine>();
+    machine->load("hardware.conf");
 
-    machine.run();
+    machine->run();
     
     return 0;
 }
