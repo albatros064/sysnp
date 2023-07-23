@@ -20,31 +20,31 @@ enum MemoryStatus {
 class MemoryModule;
 
 class Memory : public NBusDevice {
-  public:
-    Memory() {}
-    virtual ~Memory() {}
+    public:
+        Memory() {}
+        virtual ~Memory() {}
 
-    virtual void init(const libconfig::Setting &);
-    virtual void postInit();
+        virtual void init(const libconfig::Setting &);
+        virtual void postInit();
 
-    virtual void clockUp();
-    virtual void clockDown();
+        virtual void clockUp();
+        virtual void clockDown();
 
-    virtual std::string command(std::stringstream&);
-  private:
-    std::vector<std::shared_ptr<MemoryModule>> modules;
-    std::shared_ptr<MemoryModule> selectedModule;
+        virtual std::string command(std::stringstream&);
+    private:
+        std::vector<std::shared_ptr<MemoryModule>> modules;
+        std::shared_ptr<MemoryModule> selectedModule;
 
-    uint32_t ioHoleAddress;
-    uint32_t ioHoleSize;
+        uint32_t ioHoleAddress;
+        uint32_t ioHoleSize;
 
-    MemoryStatus status;
-    uint8_t latency;
+        MemoryStatus status;
+        uint8_t latency;
 
-    uint32_t dataLatch;
-    uint32_t addressLatch;
-    uint32_t readLatch;
-    uint32_t writeLatch;
+        uint32_t dataLatch;
+        uint32_t addressLatch;
+        uint32_t readLatch;
+        uint32_t writeLatch;
 };
 
 class MemoryModule {
