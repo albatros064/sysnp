@@ -46,6 +46,39 @@ void Memory::postInit() {}
 
 void Memory::clockUp() {
     machine->debug("Memory::clockUp()");
+    if (status != MemoryStatus::Ready && status != MemoryStatus::Cleanup) {
+        if (latency > 0) {
+            interface->assert(NBusSignal::NotReady, 1);
+            --latency;
+        }
+        else {
+            interface->deassert(NBusSignal::NotReady);
+            if (status == MemoryStatus::ReadLatency) {
+                uint16_t data = selectedModule->read(addressLatch);
+                data |= selectedModule->read(addressLatch + 1) << 8;
+                interface->assert(NBusSignal::Data, data);
+            }
+            else if (status == MemoryStatus::WriteLatency) {
+                if (writeLatch & 1) {
+                    selectedModule->write(addressLatch, dataLatch & 0xff);
+                }
+                if (writeLatch & 2) {
+                    selectedModule->write(addressLatch + 1, (dataLatch >> 8) & 0xff);
+                }
+            }
+            status = MemoryStatus::Cleanup;
+        }
+    }
+    else if (status == MemoryStatus::Cleanup) {
+        interface->deassert(NBusSignal::Data);
+        interface->deassert(NBusSignal::NotReady);
+
+        status = MemoryStatus::Ready;
+    }
+}
+
+void Memory::clockDown() {
+    machine->debug("Memory::clockDown()");
 
     uint32_t read  = interface->sense(NBusSignal::ReadEnable);
     uint32_t write = interface->sense(NBusSignal::WriteEnable);
@@ -89,39 +122,6 @@ void Memory::clockUp() {
     }
 }
 
-void Memory::clockDown() {
-    machine->debug("Memory::clockDown()");
-    if (status != MemoryStatus::Ready && status != MemoryStatus::Cleanup) {
-        if (latency > 0) {
-            interface->assert(NBusSignal::NotReady, 1);
-            --latency;
-        }
-        else {
-            interface->deassert(NBusSignal::NotReady);
-            if (status == MemoryStatus::ReadLatency) {
-                uint16_t data = selectedModule->read(addressLatch);
-                data |= selectedModule->read(addressLatch + 1) << 8;
-                interface->assert(NBusSignal::Data, data);
-            }
-            else if (status == MemoryStatus::WriteLatency) {
-                if (writeLatch & 1) {
-                    selectedModule->write(addressLatch, dataLatch & 0xff);
-                }
-                if (writeLatch & 2) {
-                    selectedModule->write(addressLatch + 1, (dataLatch >> 8) & 0xff);
-                }
-            }
-            status = MemoryStatus::Cleanup;
-        }
-    }
-    else if (status == MemoryStatus::Cleanup) {
-        interface->deassert(NBusSignal::Data);
-        interface->deassert(NBusSignal::NotReady);
-
-        status = MemoryStatus::Ready;
-    }
-}
-
 std::string Memory::command(std::stringstream &input)  {
     return "Ok.";
 }
@@ -130,7 +130,8 @@ MemoryModule::MemoryModule(uint32_t start, uint32_t size, bool rom, std::string 
         startAddress(start), size(size), rom(rom), readLatency(readLatency), writeLatency(writeLatency), name(name) {
     data = new uint8_t[size];
     if (rom) {
-        
+        std::ifstream fin(romFile, std::ifstream::binary);
+        fin.read((char *) data, size);
     }
 }
 MemoryModule::~MemoryModule() {

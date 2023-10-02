@@ -14,6 +14,7 @@ namespace sysnp {
 
 bool Machine::load(std::string configFile) {
     debugLevel = -1;
+    std::string rootDeviceName = "none";
     try {
         libconfig::Config config;
         config.readFile(configFile.c_str());
@@ -21,6 +22,8 @@ bool Machine::load(std::string configFile) {
         const libconfig::Setting& configRoot = config.getRoot();
 
         configRoot.lookupValue("debugLevel", debugLevel);
+
+        configRoot.lookupValue("root", rootDeviceName);
 
         const libconfig::Setting& cDevices = configRoot["devices"];
         int deviceCount = cDevices.getLength();
@@ -48,7 +51,17 @@ bool Machine::load(std::string configFile) {
 
     debug("PostInit phase");
 
+    auto rootDevice = devices.find(rootDeviceName);
+    if (rootDevice != devices.end()) {
+        debug(": " + rootDeviceName);
+        rootDevice->second->postInit();
+    }
+
     for (auto iter: devices) {
+        if (iter.first == rootDeviceName) {
+            continue;
+        }
+
         debug(": " + iter.first);
         if (iter.second) {
             iter.second->postInit();

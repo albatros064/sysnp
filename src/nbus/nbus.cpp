@@ -37,8 +37,8 @@ void NBusInterface::clockDown() {
 NBus::NBus() {
     signalMasks[NBusSignal::Address] = 0xffffff;
     signalMasks[NBusSignal::Data] = 0xffff;
-    signalMasks[NBusSignal::WriteEnable] = 3;
-    signalMasks[NBusSignal::ReadEnable ] = 3;
+    signalMasks[NBusSignal::WriteEnable] = 0x11;
+    signalMasks[NBusSignal::ReadEnable ] = 1;
     signalMasks[NBusSignal::Interrupt0] = 1;
     signalMasks[NBusSignal::Interrupt1] = 1;
     signalMasks[NBusSignal::Interrupt2] = 1;
@@ -55,10 +55,12 @@ void NBus::init(const libconfig::Setting &setting) {
     }
 }
 void NBus::postInit() {
+    machine->debug("NBus::postInit()");
     for (auto deviceName: deviceNames) {
-        machine->debug("NBus: Finding " + deviceName);
+        machine->debug(" -Finding " + deviceName);
         std::shared_ptr<NBusDevice> device = std::static_pointer_cast<NBusDevice>(machine->getDevice(deviceName));
         if (device) {
+            machine->debug(" --Initializing");
             std::shared_ptr<NBusInterface> interface = std::make_shared<NBusInterface>(shared_from_this(), device);
             device->setInterface(interface);
             addInterface(interface);

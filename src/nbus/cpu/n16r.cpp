@@ -1,4 +1,6 @@
 #include "n16r.h"
+#include <iostream>
+#include <iomanip>
 
 namespace sysnp {
 
@@ -16,58 +18,69 @@ void N16R::init(const libconfig::Setting &setting) {
 }
 
 void N16R::postInit() {
+    machine->debug("N16R::postInit()");
     busUnit.setBusInterface(interface);
     reset();
 }
 
 void N16R::clockUp() {
+    machine->debug("N16R::clockUp()");
     // Execution core
+    AluFunction aluFunction;
     switch (executionPhase) {
         case Fetch:
+            machine->debug(" -Fetch");
             if (executionBuffer.hasAddress(instructionPointer)) {
+                machine->debug(" --Decoding");
                 uint16_t instructionWord = executionBuffer.popTo(instructionPointer);
 
                 if (decoder.decode(instructionWord, instructionPointer)) {
+                    machine->debug(" --Proceeding to fetch additional");
                     executionBuffer.addRequest(instructionPointer + 2);
                     executionPhase = ExecutionPhase::FetchAdditional;
                 }
                 else {
+                    machine->debug(" --Proceeding to execute");
                     executionPhase = ExecutionPhase::Execute;
                 }
             }
             else {
+                machine->debug(" --Requesting");
                 executionBuffer.addRequest(instructionPointer);
             }
             break;
         case FetchAdditional:
-            if (executionBuffer.hasAddress(instructionPoiner + 2)) {
+            machine->debug(" -FetchAdditional");
+            if (executionBuffer.hasAddress(instructionPointer + 2)) {
                 decoder.extraI = executionBuffer.popTo(instructionPointer + 2);
                 executionPhase = ExecutionPhase::Execute;
             }
             break;
         case Execute:
-            AluFunction aluFunction = decoder.getAluFunction();
-            if (aluFunction != AluFunction::None) {
+            machine->debug(" -Execute");
+            aluFunction = decoder.aluFunction;
+            if (aluFunction != AluFunction::NoFunction) {
                 if (decoder.format == InstructionFormat::I) {
-                    alu.load(registerFile[decoder.dReg], baseI);
+                    alu.load(registerFile[decoder.dReg], decoder.baseI);
                 }
                 else {
                     alu.load(registerFile[decoder.dReg], registerFile[decoder.sReg]);
                 }
-                registerFile[decoder.dReg] = alu.calculate(aluFunction);
+                registerFile[decoder.dReg] = alu.calculate(aluFunction, decoder.extend, false);
             }
             else if (decoder.format == InstructionFormat::R) {
+                uint16_t tmp;
                 switch (decoder.function) {
                     case 0:
                         registerFile[decoder.dReg] = registerFile[decoder.sReg];
                         break;
                     case 2:
-                        uint16_t tmp = registerFile[decoder.dReg];
+                        tmp = registerFile[decoder.dReg];
                         registerFile[decoder.dReg] = registerFile[decoder.sReg];
                         registerFile[decoder.sReg] = tmp;
                         break;
                     case 3:
-                        uint16_t tmp = registerFile[decoder.dReg];
+                        tmp = registerFile[decoder.dReg];
                         registerFile[decoder.dReg] = altRegisterFile[decoder.sReg];
                         altRegisterFile[decoder.sReg] = tmp;
                         break;
@@ -82,8 +95,11 @@ void N16R::clockUp() {
                         break;
                 }
             }
+            else if (decoder.format == InstructionFormat::M) {
+                addressCalculator.loadLow(decoder.sReg, decoder.baseI);
+            }
 
-            if (decoder.executeAdditional) {
+            if (decoder.isDouble) {
                 executionPhase = ExecutionPhase::ExecuteAdditional;
             }
             else {
@@ -91,23 +107,77 @@ void N16R::clockUp() {
             }
             break;
         case ExecuteAdditional:
-            AluFunction aluFunction = decoder.getAluFunction();
-            if (aluFunction != AluFunction::None) {
-                alu.load(registerFile[decoder.dReg+1], 
+            machine->debug(" -ExecuteAdditional");
+            if (decoder.format == InstructionFormat::M) {
+                addressCalculator.loadHigh(decoder.sReg+1);
+                uint32_t memoryAddress = addressCalculator.calculate();
+
+                if (decoder.opcode == 2 || decoder.opcode == 3) {
+                    busUnit.addHighPriorityRead(memoryAddress);
+                }
+                else {
+                    uint16_t writeData = registerFile[decoder.dReg];
+                    uint8_t activeBytes = 3;
+                    if (decoder.opcode == 4) {
+                        if (memoryAddress & 1) {
+                            activeBytes = 0x10;
+                            writeData = writeData << 8;
+                        }
+                        else {
+                            activeBytes = 0x01;
+                            writeData = writeData & 0x00ff;
+                        }
+                    }
+                    busUnit.addHighPriorityWrite(memoryAddress, writeData, activeBytes);
+                }
+            }
+            else {
+                aluFunction = decoder.aluFunction;
+                if (aluFunction != AluFunction::NoFunction) {
+                    ExtendFunction extend = ExtendFunction::NoExtend;
+                    if (decoder.format == InstructionFormat::I) {
+                        extend = ExtendFunction::SignAdditional;
+                        alu.load(registerFile[decoder.dReg+1], decoder.baseI);
+                    }
+                    else {
+                        alu.load(registerFile[decoder.dReg+1], registerFile[decoder.sReg+1]);
+                    }
+                    registerFile[decoder.dReg] = alu.calculate(aluFunction, extend, false);
+                }
             }
             executionPhase = ExecutionPhase::Commit;
             break;
         case Commit:
-            if (format == InstructionFormat::J) {
-                instructionPointer = instructionPointer & 0xc000000 | (baseI << 17) | (extraI << 1);
+            machine->debug(" -Commit");
+            if (decoder.format == InstructionFormat::M) {
+                if (decoder.opcode == 2 || decoder.opcode == 3) {
+                    if (!busUnit.isReadReady() || !busUnit.isHighReadPriority()) {
+                        break;
+                    }
+                    uint16_t readData = busUnit.getReadData();
+                    if (decoder.opcode == 2) {
+                        if (addressCalculator.calculate() & 1) {
+                            readData = readData >> 8;
+                        }
+                        else {
+                            readData = readData & 0x00ff;
+                        }
+                    }
+                    registerFile[decoder.dReg] = readData;
+                }
+                instructionPointer = decoder.nextAddress;
                 executionPhase = ExecutionPhase::Fetch;
             }
-            else if (format == InstructionFormat::R && (function == 070 || function == 071)) {
-                instructionPointer = registerFile[dReg & 0x6] << 16 | registerFile[dreg & 0x6 | 1];
+            else if (decoder.format == InstructionFormat::J) {
+                instructionPointer = (instructionPointer & 0xc000000) | (decoder.baseI << 17) | (decoder.extraI << 1);
+                executionPhase = ExecutionPhase::Fetch;
+            }
+            else if (decoder.format == InstructionFormat::R && (decoder.function == 070 || decoder.function == 071)) {
+                instructionPointer = registerFile[decoder.dReg & 0x6] << 16 | registerFile[decoder.dReg & 0x6 | 1];
                 executionPhase = ExecutionPhase::Fetch;
             }
             else {
-                if (format == InstructionFormat::B && core.branchTaken) {
+                if (decoder.format == InstructionFormat::B && core.branchTaken) {
                     uint32_t branchOffset = decoder.extraI;
                     if (branchOffset & 0x00008000) {
                         branchOffset |= 0xffff0000;
@@ -115,8 +185,9 @@ void N16R::clockUp() {
                     decoder.nextAddress += branchOffset;
                 }
 
-                if (decoder.nextAddress & 0xffff0000 == instructionPointer & 0xffff0000) {
+                if ((decoder.nextAddress & 0xffff0000) == (instructionPointer & 0xffff0000)) {
                     executionPhase = ExecutionPhase::Fetch;
+                    instructionPointer = decoder.nextAddress;
                 }
                 else {
                     executionPhase = ExecutionPhase::CommitAdditional;
@@ -124,6 +195,8 @@ void N16R::clockUp() {
             }
             break;
         case CommitAdditional:
+            machine->debug(" -CommitAdditional");
+            instructionPointer = decoder.nextAddress;
             executionPhase = ExecutionPhase::Fetch;
             break;
         default:
@@ -131,15 +204,24 @@ void N16R::clockUp() {
     }
 
     // Execution buffer
+    machine->debug("Processing execution buffer");
     if ((!executionBuffer.isEmpty() && !executionBuffer.isFull()) || executionBuffer.hasRequest()) {
-        busUnit.addLowPriorityRequest(executionBuffer.getNextAddress());
+        busUnit.addLowPriorityRead(executionBuffer.getNextAddress());
     }
 
     // Bus interface
-    
+    machine->debug("Processing bus unit");
+    busUnit.clockUp();
 }
 
 void N16R::clockDown() {
+    machine->debug("N16R::clockDown()");
+
+    machine->debug("Processing bus unit");
+    busUnit.clockDown();
+
+    machine->debug("Processing execution buffer");
+    executionBuffer.checkBus(busUnit);
 }
 
 std::string N16R::command(std::stringstream &input) {
@@ -153,22 +235,34 @@ std::string N16R::command(std::stringstream &input) {
         response << "Ok.";
     }
     else if (commandWord == "status") {
+        response << "MReg         AReg" << std::endl;
+        for (int i = 0; i < 8; i++) {
+            response << "0" << i << ": " << std::setw(6) << std::setfill('0') << std::oct << registerFile[i];
+            response << "   ";
+            response << "1" << i << ": " << std::setw(6) << std::setfill('0') << std::oct << altRegisterFile[i];
+            response << std::endl;
+        }
+        response << "IP: " << std::setw(11) << std::setfill('0') << std::oct << instructionPointer << std::endl;
+        executionBuffer.output(response);
         response << "Ok.";
     }
     else {
         response << "Ok.";
     }
-    return response
+    return response.str();
 }
 
 void N16R::reset() {
-    instructionPoiner = resetAddress;
-    executionBuffer.reset()
-    executionPhase = ExecutionPhase::InstructionFetch;
+    instructionPointer = resetAddress;
+    executionBuffer.reset();
+    busUnit.reset();
+    executionPhase = ExecutionPhase::Fetch;
 }
 
-bool Decoder::decode(uint16_t word, uint32_t instructionPointer) {
-    opcode = (word & 0xf000) >> 12;
+bool DecoderUnit::decode(uint16_t word, uint32_t instructionPointer) {
+    hasTrap = false;
+    extend = ExtendFunction::NoExtend;
+    opcode = (uint8_t) ((word & 0xf000) >> 12);
     nextAddress = instructionPointer + 2;
     if (opcode == 0 || opcode == 6) {
         if (opcode == 0) {
@@ -184,7 +278,7 @@ bool Decoder::decode(uint16_t word, uint32_t instructionPointer) {
         baseI    = 0;
         extraI   = 0;
     }
-    else if (opcode & 0x7 == 0x7) {
+    else if ((opcode & 0x7) == 0x7) {
         format   = InstructionFormat::J;
         function = 0;
         dReg     = 0;
@@ -217,30 +311,36 @@ bool Decoder::decode(uint16_t word, uint32_t instructionPointer) {
             case 001:
                 isDouble = true;
                 aluFunction = function ? AluFunction::Add : AluFunction::Sub;
+                extend = ExtendFunction::Sign;
                 break;
             case 010:
                 aluFunction = AluFunction::Add;
+                extend = function ? ExtendFunction::Zero : ExtendFunction::Sign;
                 break;
             case 011:
                 aluFunction = AluFunction::Sub;
+                extend = function ? ExtendFunction::Zero : ExtendFunction::Sign;
                 break;
             case 012:
-                aluFunction = function ? AluFunction::And : AluFunction::Or;
+                aluFunction = function ? AluFunction::Or: AluFunction::And;
+                extend = ExtendFunction::Zero;
                 break;
             case 013:
-                aluFunction = function ? AluFunction::Xor : AluFunction::Lui;
+                aluFunction = function ? AluFunction::Lui : AluFunction::Xor;
+                extend = ExtendFunction::Zero;
                 break;
             case 014:
-                aluFunctino = AluFunction::LShift;
+                aluFunction = AluFunction::LShift;
                 break;
             case 015:
                 aluFunction = function ? AluFunction::RShift : AluFunction::RShiftA;
                 break;
             case 016:
                 aluFunction = AluFunction::Sub;
+                extend = function ? ExtendFunction::Zero : ExtendFunction::Sign;
                 break;
             default:
-                aluFunction = AluFunction::None;
+                aluFunction = AluFunction::NoFunction;
                 break;
         }
     }
@@ -273,31 +373,36 @@ bool Decoder::decode(uint16_t word, uint32_t instructionPointer) {
                 aluFunction = AluFunction::Nor;
                 break;
             default:
-                aluFunction = AluFunction::None;
+                aluFunction = AluFunction::NoFunction;
                 break;
         }
     }
     else {
-        aluFunction = AluFunction::None;
+        aluFunction = AluFunction::NoFunction;
     }
 
-    return format == InstructionFormat::J || InstructionFormat::B;
+    return format == InstructionFormat::J || format == InstructionFormat::B;
 }
 
-void ALU::load(uint16_t a, uint16_t b) {
+void ArithmeticLogicUnit::load(uint16_t a, uint16_t b) {
     this->a = a;
     this->b = b;
 }
-uint16_t ALU::calculate(AluFunction function, bool chain) {
-    uint8_t extend = (function & 0xc0) >> 6;
-    if (extend) {
+uint16_t ArithmeticLogicUnit::calculate(AluFunction function, ExtendFunction extend, bool chain) {
+    if (extend == ExtendFunction::SignAdditional) {
+        if (b & 0x0080) {
+            b = 0xffff;
+        }
+        else {
+            b = 0x0000;
+        }
+    }
+    else if (extend != ExtendFunction::NoExtend) {
         b = b & 0x00ff;
-        if (extend == 2 && b & 0x0080) {
+        if (extend == ExtendFunction::Sign && b & 0x0080) {
             b = b | 0xff00;
         }
     }
-
-    function = function & 0x3f;
 
     uint32_t result;
     switch (function) {
@@ -332,7 +437,7 @@ uint16_t ALU::calculate(AluFunction function, bool chain) {
             if (a & 0x8000) {
                 result |= 0xffff0000;
             }
-            result = (result >> b) 0xffff;
+            result = (result >> b) & 0xffff;
             break;
         case RShift: // right shift, logical
             b = b & 0xf + 1;
@@ -354,14 +459,28 @@ uint16_t ALU::calculate(AluFunction function, bool chain) {
     return (uint16_t) (result & 0xffff);
 }
 
-bool ALU::getOverflow() {
+bool ArithmeticLogicUnit::getOverflow() {
     return overflow;
 }
-bool ALU::getNegative() {
+bool ArithmeticLogicUnit::getNegative() {
     return negative;
 }
-bool ALU::getZero() {
+bool ArithmeticLogicUnit::getZero() {
     return zero;
+}
+
+void AddressCalculator::loadLow(uint16_t low, uint16_t offset) {
+    base = low;
+    this->offset = offset & 0x7f;
+    if (offset & 0x40) {
+       this->offset = this->offset | 0xff80; 
+    }
+}
+void AddressCalculator::loadHigh(uint16_t high) {
+    base = base | (uint16_t) high << 16;
+}
+uint32_t AddressCalculator::calculate() {
+    return base + offset;
 }
 
 bool ExecutionBuffer::isEmpty() {
@@ -411,6 +530,13 @@ uint32_t ExecutionBuffer::getNextAddress() {
     return address[(head - 1) % 4] + 2;
 }
 
+void ExecutionBuffer::checkBus(BusUnit &busUnit) {
+    if (hasRequest() && busUnit.isReadReady() && !busUnit.isHighReadPriority()) {
+        push(requestedAddress, busUnit.getReadData());
+        pendingRequest = false;
+    }
+}
+
 uint16_t ExecutionBuffer::popTo(uint32_t request) {
     request = request & 0xfffffffe;
 
@@ -444,6 +570,135 @@ void ExecutionBuffer::push(uint32_t setAddress, uint16_t word) {
 void ExecutionBuffer::reset() {
     head = tail = 0;
     pendingRequest = false;
+}
+void ExecutionBuffer::output(std::stringstream &output) {
+    for (int i = 0; i < 4; i++) {
+        output << "B" << i << ": ";
+        if (head == tail) {
+            output << " ";
+        }
+        else if (i == head) {
+            output << "h";
+        }
+        else if (i == tail) {
+            output << "t";
+        }
+        else {
+            output << " ";
+        }
+
+        output << " 0" << std::setw(11) << std::setfill('0') << std::oct << address[i];
+        output << " 0" << std::setw(6) << std::setfill('0') << std::oct << buffer[i];
+        output << std::endl;
+    }
+}
+
+void BusUnit::setBusInterface(std::shared_ptr<NBusInterface> interface) {
+    this->interface = interface;
+}
+void BusUnit::reset() {
+    phase = BusPhase::Idle;
+    readReady = false;
+    readPriority = false;
+    hasLowPriority = false;
+    hasHighPriority = false;
+    hasHighPriorityWrite = false;
+}
+
+void BusUnit::clockUp() {
+    interface->deassert(NBusSignal::Address);
+    interface->deassert(NBusSignal::Data);
+    interface->deassert(NBusSignal::WriteEnable);
+    interface->deassert(NBusSignal::ReadEnable);
+
+    if (phase == BusPhase::Idle) {
+        if (hasHighPriority) {
+            interface->assert(NBusSignal::Address, highPriorityAddress);
+            if (hasHighPriorityWrite) {
+                interface->assert(NBusSignal::Data, highPriorityData);
+                interface->assert(NBusSignal::WriteEnable, writeMode);
+                phase = BusPhase::Write;
+            }
+            else {
+                interface->assert(NBusSignal::ReadEnable, 1);
+                phase = BusPhase::HighRead;
+            }
+        }
+        else if (hasLowPriority) {
+            interface->assert(NBusSignal::Address, lowPriorityAddress);
+            interface->assert(NBusSignal::ReadEnable, 1);
+            phase = BusPhase::LowRead;
+        }
+    }
+}
+void BusUnit::clockDown() {
+    switch (phase) {
+        case BusPhase::LowRead:
+        case BusPhase::HighRead:
+            if (phase == BusPhase::LowRead) {
+                phase = BusPhase::LowReadWait;
+                hasLowPriority = false;
+            }
+            else {
+                phase = BusPhase::HighReadWait;
+                hasHighPriority = false;
+            }
+            break;
+        case BusPhase::LowReadWait:
+        case BusPhase::HighReadWait:
+            if (interface->sense(NBusSignal::NotReady)) {
+                break;
+            }
+
+            readData = (uint16_t) (interface->sense(NBusSignal::Data) & 0xffff);
+            readReady = true;
+            readPriority = phase == BusPhase::HighReadWait;
+            phase = BusPhase::Idle;
+            break;
+        case BusPhase::Write:
+            phase = BusPhase::WriteWait;
+            hasHighPriority = false;
+            hasHighPriorityWrite = false;
+            break;
+        case BusPhase::WriteWait:
+            if (interface->sense(NBusSignal::NotReady)) {
+                break;
+            }
+
+            phase = BusPhase::Idle;
+            break;
+        case BusPhase::Idle:
+        default:
+            break;
+    }
+}
+
+void BusUnit::addLowPriorityRead(uint32_t address) {
+    lowPriorityAddress = address;
+    hasLowPriority = true;
+}
+void BusUnit::addHighPriorityRead(uint32_t address) {
+    highPriorityAddress = address;
+    hasHighPriority = true;
+    hasHighPriorityWrite = false;
+}
+void BusUnit::addHighPriorityWrite(uint32_t address, uint16_t data, uint8_t activeBytes) {
+    highPriorityAddress = address;
+    highPriorityData = data;
+    hasHighPriority = true;
+    hasHighPriorityWrite = true;
+    writeMode = activeBytes;
+}
+
+bool BusUnit::isReadReady() {
+    return readReady;
+}
+bool BusUnit::isHighReadPriority() {
+    return readPriority;
+}
+uint16_t BusUnit::getReadData() {
+    readReady = false;
+    return readData;
 }
 
 }; // namespace n16r
