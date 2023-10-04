@@ -168,6 +168,16 @@ void Machine::run() {
                     clockState = false;
                 }
             }
+            else {
+                int repeatCount = std::stoi(commandWord);
+                if (repeatCount > 0) {
+                    for (; repeatCount > 0; repeatCount--) {
+                        std::cout << "Pulse" << std::endl;
+                        bus->clockUp();
+                        bus->clockDown();
+                    }
+                }
+            }
         }
         else if (command == "bus") {
             std::cout << bus->command(cs) << std::endl;

@@ -15,6 +15,9 @@ N16R::~N16R() {
 
 void N16R::init(const libconfig::Setting &setting) {
     setting.lookupValue("resetAddress", resetAddress);
+    for (int i = 0; i < 8; i++) {
+        registerFile[i] = altRegisterFile[i] = 0x5555;
+    }
 }
 
 void N16R::postInit() {
@@ -60,6 +63,7 @@ void N16R::clockUp() {
             machine->debug(" -Execute");
             aluFunction = decoder.aluFunction;
             if (aluFunction != AluFunction::NoFunction) {
+                machine->debug(" -- alu?");
                 if (decoder.format == InstructionFormat::I) {
                     alu.load(registerFile[decoder.dReg], decoder.baseI);
                 }
@@ -69,6 +73,7 @@ void N16R::clockUp() {
                 registerFile[decoder.dReg] = alu.calculate(aluFunction, decoder.extend, false);
             }
             else if (decoder.format == InstructionFormat::R) {
+                machine->debug(" -- R instruction");
                 uint16_t tmp;
                 switch (decoder.function) {
                     case 0:
@@ -96,10 +101,11 @@ void N16R::clockUp() {
                 }
             }
             else if (decoder.format == InstructionFormat::M) {
+                machine->debug(" --M instruction");
                 addressCalculator.loadLow(decoder.sReg, decoder.baseI);
             }
 
-            if (decoder.isDouble) {
+            if (decoder.isDouble || decoder.format == InstructionFormat::M) {
                 executionPhase = ExecutionPhase::ExecuteAdditional;
             }
             else {
@@ -109,10 +115,11 @@ void N16R::clockUp() {
         case ExecuteAdditional:
             machine->debug(" -ExecuteAdditional");
             if (decoder.format == InstructionFormat::M) {
-                addressCalculator.loadHigh(decoder.sReg+1);
+                addressCalculator.loadHigh(registerFile[decoder.sReg+1]);
                 uint32_t memoryAddress = addressCalculator.calculate();
 
                 if (decoder.opcode == 2 || decoder.opcode == 3) {
+                    machine->debug(" --adding read");
                     busUnit.addHighPriorityRead(memoryAddress);
                 }
                 else {
@@ -152,6 +159,7 @@ void N16R::clockUp() {
             if (decoder.format == InstructionFormat::M) {
                 if (decoder.opcode == 2 || decoder.opcode == 3) {
                     if (!busUnit.isReadReady() || !busUnit.isHighReadPriority()) {
+                        machine->debug(" --Waiting for read");
                         break;
                     }
                     uint16_t readData = busUnit.getReadData();
@@ -169,7 +177,10 @@ void N16R::clockUp() {
                 executionPhase = ExecutionPhase::Fetch;
             }
             else if (decoder.format == InstructionFormat::J) {
-                instructionPointer = (instructionPointer & 0xc000000) | (decoder.baseI << 17) | (decoder.extraI << 1);
+                instructionPointer =
+                    (instructionPointer & 0xc000000) |
+                    ((uint32_t) decoder.baseI << 17) |
+                    ((uint32_t) decoder.extraI << 1);
                 executionPhase = ExecutionPhase::Fetch;
             }
             else if (decoder.format == InstructionFormat::R && (decoder.function == 070 || decoder.function == 071)) {
@@ -287,7 +298,7 @@ bool DecoderUnit::decode(uint16_t word, uint32_t instructionPointer) {
         extraI   = 0;
         nextAddress += 2;
     }
-    else if (opcode & 0x8 || opcode == 1) {
+    else if ((opcode & 0x8) || opcode == 1) {
         format   = InstructionFormat::I;
         function = (word >> 8) & 0x01;
         dReg     = (word >> 9) & 0x07;
@@ -469,15 +480,15 @@ bool ArithmeticLogicUnit::getZero() {
     return zero;
 }
 
-void AddressCalculator::loadLow(uint16_t low, uint16_t offset) {
+void AddressCalculator::loadLow(uint16_t low, uint16_t newOffset) {
     base = low;
-    this->offset = offset & 0x7f;
-    if (offset & 0x40) {
-       this->offset = this->offset | 0xff80; 
+    offset = newOffset & 0x7f;
+    if (newOffset & 0x40) {
+       offset = offset | 0xffffff80; 
     }
 }
 void AddressCalculator::loadHigh(uint16_t high) {
-    base = base | (uint16_t) high << 16;
+    base = base | ((uint32_t) high) << 16;
 }
 uint32_t AddressCalculator::calculate() {
     return base + offset;
@@ -500,7 +511,7 @@ bool ExecutionBuffer::hasAddress(uint32_t requestAddress) {
         return false;
     }
 
-    for (uint8_t i = tail; (head - i) % 4 > 0; i = (i + 1) % 4) {
+    for (uint8_t i = tail; (head - i) % 4 != 0; i = (i + 1) % 4) {
         if (requestAddress == address[i]) {
             return true;
         }
@@ -527,7 +538,7 @@ uint32_t ExecutionBuffer::getNextAddress() {
         return requestedAddress;
     }
 
-    return address[(head - 1) % 4] + 2;
+    return address[(head + 3) % 4] + 2;
 }
 
 void ExecutionBuffer::checkBus(BusUnit &busUnit) {
@@ -542,7 +553,7 @@ uint16_t ExecutionBuffer::popTo(uint32_t request) {
 
     uint16_t value;
     uint8_t i;
-    for (i = tail; (head - i) % 4 > 0; i = (i + 1) % 4) {
+    for (i = tail; (head - i) % 4 != 0; i = (i + 1) % 4) {
         if (request == address[i]) {
             value = buffer[i];
             tail = i;

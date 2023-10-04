@@ -93,6 +93,8 @@ void Memory::clockDown() {
             readLatch = read;
             writeLatch = write;
 
+            machine->debug(" -Request address: " + std::to_string(addressLatch));
+
             if (addressLatch < ioHoleAddress || addressLatch >= (ioHoleAddress + ioHoleSize)) {
                 machine->debug("Memory - not in io hole");
                 for (auto module: modules) {
