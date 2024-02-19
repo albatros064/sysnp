@@ -12,10 +12,15 @@ namespace n16r {
 enum ExecutionPhase {
     Fetch,
     FetchAdditional,
+    FetchShielded,
     Execute,
     ExecuteAdditional,
     Commit,
-    CommitAdditional
+    CommitAdditional,
+    CommitShielded,
+    CommitAdditionalShielded,
+    Exception,
+    ExceptionAdditional
 };
 enum BusPhase {
     Idle,
@@ -26,15 +31,42 @@ enum BusPhase {
     Write,
     WriteWait
 };
+enum ExceptionType {
+    Interrupt           = 000,
+    // Vmem
+    // Vmem
+    // Vmem
+    IllegalLoad         = 004,
+    IllegalStore,
+    IBus,
+    DBus,
+    Syscall,
+    Breakpoint,
+    ReservedInstruction,
+    InvalidInstruction,
+    Overflow,
+    ExceptionNone       = 076,
+    ExceptionInhibit
+};
 enum InstructionFormat {
     R,  // register
     I,  // immediate
     M,  // memory
+    E,  // memory (reg)
     J,  // jump
-    B   // branch
+    B,  // branch
+    NoFormat
 };
 enum AluFunction {
     Add, Sub, And, Or, Xor, Nor, LShift, RShift, RShiftA, Lui, NoFunction
+};
+enum BranchFunction {
+    Equal,      // equal
+    NotEqual,   // greater than or less than
+    GreaterThan,// greater than
+    NotGreater, // less than or equal
+    LessThan,   // less than
+    NotLess     // greater than or equal
 };
 enum ExtendFunction {
     Sign, Zero, SignAdditional, NoExtend
@@ -54,6 +86,9 @@ class BusUnit {
         bool isReadReady();
         bool isHighReadPriority();
         uint16_t getReadData();
+        uint32_t getReadAddress();
+
+        uint8_t hasInterrupt();
 
     private:
         std::shared_ptr<NBusInterface> interface;
@@ -63,6 +98,9 @@ class BusUnit {
         bool readReady;
         bool readPriority;
         uint16_t readData;
+        uint32_t readAddress;
+
+        uint32_t addressInFlight;
 
         uint32_t lowPriorityAddress;
         uint32_t highPriorityAddress;
@@ -71,6 +109,8 @@ class BusUnit {
         bool hasLowPriority;
         bool hasHighPriority;
         bool hasHighPriorityWrite;
+
+        uint8_t interruptState;
 };
 
 class ExecutionBuffer {
@@ -108,6 +148,7 @@ class ArithmeticLogicUnit {
         bool getOverflow();
         bool getNegative();
         bool getZero();
+        bool branchTaken(BranchFunction);
     private:
         uint16_t a;
         uint16_t b;
@@ -127,24 +168,21 @@ class AddressCalculator {
 
 class DecoderUnit {
     public:
-        bool decode(uint16_t, uint32_t);
+        int decode(uint16_t, uint32_t);
         bool isDouble;
         bool hasTrap;
         uint8_t opcode;
         uint8_t function;
         uint8_t dReg;
         uint8_t sReg;
+        uint8_t rReg;
         uint16_t baseI;
         uint16_t extraI;
         uint32_t nextAddress;
         AluFunction aluFunction;
+        BranchFunction branchFunction;
         ExtendFunction extend;
         InstructionFormat format;
-};
-
-class CoreUnit {
-    public:
-        bool branchTaken;
 };
 
 class N16R : public NBusDevice {
@@ -160,22 +198,27 @@ class N16R : public NBusDevice {
 
         virtual std::string command(std::stringstream&);
     private:
-        uint16_t registerFile   [8];
-        uint16_t altRegisterFile[8];
+        uint16_t registerFile   [16];
+        uint16_t altRegisterFile[16];
+        uint16_t sysRegisterFile[16];
         uint32_t instructionPointer;
 
         ExecutionPhase executionPhase;
         uint32_t busRequest;
         bool     busBusy;
 
-        CoreUnit core;
         ExecutionBuffer executionBuffer;
         BusUnit busUnit;
         DecoderUnit decoder;
         ArithmeticLogicUnit alu;
         AddressCalculator addressCalculator;
 
+        ExceptionType pendingException;
+        bool exceptionSuppress;
+
         uint32_t resetAddress;
+
+        bool isKernel();
 
         void reset();
 };

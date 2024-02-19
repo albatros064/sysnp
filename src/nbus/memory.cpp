@@ -1,4 +1,5 @@
 #include <iostream>
+#include <iomanip>
 #include <fstream>
 #include <array>
 
@@ -42,7 +43,9 @@ void Memory::init(const libconfig::Setting &setting) {
     machine->debug(" Found " + std::to_string(moduleCount) + " modules for " + std::to_string(capacity) + "KB");
 }
 
-void Memory::postInit() {}
+void Memory::postInit() {
+    status = MemoryStatus::Ready;
+}
 
 void Memory::clockUp() {
     machine->debug("Memory::clockUp()");
@@ -93,7 +96,10 @@ void Memory::clockDown() {
             readLatch = read;
             writeLatch = write;
 
-            machine->debug(" -Request address: " + std::to_string(addressLatch));
+            std::stringstream str;
+            str << " -Request address: " << std::setw(8) << std::setfill('0') << std::hex << addressLatch;
+
+            machine->debug(str.str());
 
             if (addressLatch < ioHoleAddress || addressLatch >= (ioHoleAddress + ioHoleSize)) {
                 machine->debug("Memory - not in io hole");
@@ -160,6 +166,7 @@ uint8_t MemoryModule::read(uint32_t address) {
     if (address < startAddress || address >= (startAddress + size)) {
         return 0;
     }
+
     return data[address - startAddress];
 }
 void MemoryModule::write(uint32_t address, uint8_t datum) {

@@ -24,7 +24,7 @@ class Machine : public std::enable_shared_from_this<Machine> {
 
 	void run();
 
-    void debug(int,std::string);
+    void debug(int, std::string);
     void debug(std::string);
   private:
     std::map<std::string,std::shared_ptr<Device>> devices;

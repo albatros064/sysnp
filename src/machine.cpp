@@ -8,6 +8,7 @@
 #include "device.h"
 #include "nbus/nbus.h"
 #include "nbus/memory.h"
+#include "nbus/serial.h"
 #include "nbus/cpu/n16r.h"
 
 namespace sysnp {
@@ -21,9 +22,9 @@ bool Machine::load(std::string configFile) {
 
         const libconfig::Setting& configRoot = config.getRoot();
 
-        configRoot.lookupValue("debugLevel", debugLevel);
-
         configRoot.lookupValue("root", rootDeviceName);
+
+        configRoot.lookupValue("debugLevel", debugLevel);
 
         const libconfig::Setting& cDevices = configRoot["devices"];
         int deviceCount = cDevices.getLength();
@@ -34,7 +35,7 @@ bool Machine::load(std::string configFile) {
 
             debug("Creating device type \"" + moduleName + "\"");
 
-            std::shared_ptr<Device> newDevice = this->createDevice(moduleName);
+            std::shared_ptr<Device> newDevice = createDevice(moduleName);
             if (newDevice) {
                 debug("Initializing device type \"" + moduleName + "\"");
                 newDevice->setMachine(shared_from_this());
@@ -76,14 +77,17 @@ bool Machine::load(std::string configFile) {
 
 std::shared_ptr<Device> Machine::createDevice(std::string deviceName) {
     std::shared_ptr<Device> newDevice;
-    if (deviceName.compare("n16r") == 0) {
+    if (deviceName == "n16r") {
         newDevice = std::make_shared<nbus::n16r::N16R>();
     }
-    else if (deviceName.compare("memory") == 0) {
+    else if (deviceName == "memory") {
         newDevice = std::make_shared<nbus::Memory>();
     }
-    else if (deviceName.compare("nbus") == 0) {
+    else if (deviceName == "nbus") {
         newDevice = std::make_shared<nbus::NBus>();
+    }
+    else if (deviceName == "serial") {
+        newDevice = std::make_shared<nbus::Serial>();
     }
     return newDevice;
 }
@@ -147,7 +151,9 @@ void Machine::run() {
             cs >> commandWord;
 
             if (commandWord == "pulse") {
+                std::stringstream com;
                 bus->clockUp();
+                std::cout << bus->command(com) << std::endl;
                 bus->clockDown();
             }
             else if (commandWord == "rise") {
@@ -169,13 +175,18 @@ void Machine::run() {
                 }
             }
             else {
-                int repeatCount = std::stoi(commandWord);
-                if (repeatCount > 0) {
-                    for (; repeatCount > 0; repeatCount--) {
-                        std::cout << "Pulse" << std::endl;
-                        bus->clockUp();
-                        bus->clockDown();
-                    }
+                int repeatCount = 0;
+                try {
+                    repeatCount = std::stoi(commandWord);
+                }
+                catch (std::invalid_argument e) {}
+
+                for (; repeatCount > 0; repeatCount--) {
+                    std::stringstream com;
+                    std::cout << "Pulse" << std::endl;
+                    bus->clockUp();
+                    std::cout << bus->command(com) << std::endl;
+                    bus->clockDown();
                 }
             }
         }

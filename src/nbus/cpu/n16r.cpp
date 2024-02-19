@@ -18,6 +18,9 @@ void N16R::init(const libconfig::Setting &setting) {
     for (int i = 0; i < 8; i++) {
         registerFile[i] = altRegisterFile[i] = 0x5555;
     }
+    sysRegisterFile[0] = 0;
+    sysRegisterFile[1] = 0;
+    pendingException = ExceptionType::ExceptionNone;
 }
 
 void N16R::postInit() {
@@ -30,17 +33,25 @@ void N16R::clockUp() {
     machine->debug("N16R::clockUp()");
     // Execution core
     AluFunction aluFunction;
+
     switch (executionPhase) {
         case Fetch:
+            exceptionSuppress = false;
             machine->debug(" -Fetch");
             if (executionBuffer.hasAddress(instructionPointer)) {
                 machine->debug(" --Decoding");
                 uint16_t instructionWord = executionBuffer.popTo(instructionPointer);
 
-                if (decoder.decode(instructionWord, instructionPointer)) {
+                auto result = decoder.decode(instructionWord, instructionPointer);
+                if (result > 1) {
                     machine->debug(" --Proceeding to fetch additional");
                     executionBuffer.addRequest(instructionPointer + 2);
                     executionPhase = ExecutionPhase::FetchAdditional;
+                }
+                else if (result == 1) {
+                    machine->debug(" -Reserved on decode " + std::to_string(decoder.function));
+                    pendingException = ExceptionType::ReservedInstruction;
+                    executionPhase = ExecutionPhase::Exception;
                 }
                 else {
                     machine->debug(" --Proceeding to execute");
@@ -51,6 +62,7 @@ void N16R::clockUp() {
                 machine->debug(" --Requesting");
                 executionBuffer.addRequest(instructionPointer);
             }
+
             break;
         case FetchAdditional:
             machine->debug(" -FetchAdditional");
@@ -70,73 +82,139 @@ void N16R::clockUp() {
                 else {
                     alu.load(registerFile[decoder.dReg], registerFile[decoder.sReg]);
                 }
-                registerFile[decoder.dReg] = alu.calculate(aluFunction, decoder.extend, false);
+
+                uint16_t result = alu.calculate(aluFunction, decoder.extend, false);
+                if (decoder.format != InstructionFormat::B) {
+                    registerFile[decoder.dReg] = result;
+                }
             }
             else if (decoder.format == InstructionFormat::R) {
                 machine->debug(" -- R instruction");
                 uint16_t tmp;
                 switch (decoder.function) {
-                    case 0:
+                    case 000: // mov r16->r16
+                    case 001: // mov r32->r32
                         registerFile[decoder.dReg] = registerFile[decoder.sReg];
                         break;
-                    case 2:
+                    case 002: // xch r16<>r16
+                    case 003: // xch r32<>r32
                         tmp = registerFile[decoder.dReg];
                         registerFile[decoder.dReg] = registerFile[decoder.sReg];
                         registerFile[decoder.sReg] = tmp;
                         break;
-                    case 3:
+                    case 040: // mov a16->r16
+                    case 042: // mov a32->r32
+                        registerFile[decoder.dReg] = altRegisterFile[decoder.sReg];
+                        break;
+                    case 041: // mov r16->a16
+                    case 043: // mov r32->a32
+                        altRegisterFile[decoder.dReg] = registerFile[decoder.sReg];
+                        break;
+                    case 044: // xch r16<>a16
+                    case 045: // xch r32<>a32
                         tmp = registerFile[decoder.dReg];
                         registerFile[decoder.dReg] = altRegisterFile[decoder.sReg];
                         altRegisterFile[decoder.sReg] = tmp;
                         break;
-                    case 4:
-                        registerFile[decoder.dReg] = altRegisterFile[decoder.sReg];
+                    case 030: // syscall
+                        pendingException = ExceptionType::Syscall;
                         break;
-                    case 5:
-                        altRegisterFile[decoder.dReg] = registerFile[decoder.sReg];
+                    case 031: // eret
+                        if (!isKernel()) {
+                            pendingException = ExceptionType::ReservedInstruction;
+                            break;
+                        }
+                        // shift the kernel state stack
+                        tmp = sysRegisterFile[1] & 0xfff0 | ((sysRegisterFile[1] >> 2) & 0xf);
+                        sysRegisterFile[1] = tmp;
+                        exceptionSuppress = true;
+                        break;
+                    case 032: // mov s16->r16
+                    case 034: // mov s32->r32
+                        if (!isKernel()) {
+                            pendingException = ExceptionType::ReservedInstruction;
+                            break;
+                        }
+                        registerFile[decoder.dReg] = sysRegisterFile[decoder.sReg];
+                        break;
+                    case 033: // mov r16->s16
+                    case 035: // mov r32->s32
+                        if (!isKernel()) {
+                            pendingException = ExceptionType::ReservedInstruction;
+                            break;
+                        }
+                        sysRegisterFile[decoder.dReg] = registerFile[decoder.sReg];
+                        break;
+                    case 070: // jr r32
+                    case 071: // jr a32
+                    case 072: // jalr
+                        // avoid throwing an invalid instruction exception
                         break;
                     default:
                         // Invalid instruction
+                        pendingException = ExceptionType::InvalidInstruction;
+                        machine->debug(" -Invalid Instruction " + std::to_string(decoder.function));
                         break;
                 }
             }
             else if (decoder.format == InstructionFormat::M) {
                 machine->debug(" --M instruction");
-                addressCalculator.loadLow(decoder.sReg, decoder.baseI);
+                addressCalculator.loadLow(registerFile[decoder.sReg << 1], decoder.extraI);
+            }
+            else if (decoder.format == InstructionFormat::E) {
+                machine->debug(" --E instruction");
+                addressCalculator.loadLow(registerFile[decoder.sReg << 1], registerFile[decoder.rReg]);
             }
 
-            if (decoder.isDouble || decoder.format == InstructionFormat::M) {
+            if (decoder.isDouble || decoder.format == InstructionFormat::B) {
+                executionPhase = ExecutionPhase::ExecuteAdditional;
+            }
+            else if (decoder.format == InstructionFormat::M || decoder.format == InstructionFormat::E) {
                 executionPhase = ExecutionPhase::ExecuteAdditional;
             }
             else {
                 executionPhase = ExecutionPhase::Commit;
             }
+
+            if (pendingException != ExceptionType::ExceptionNone) {
+                machine->debug(" -Going to Exception");
+                executionPhase = ExecutionPhase::Exception;
+            }
+
             break;
         case ExecuteAdditional:
             machine->debug(" -ExecuteAdditional");
-            if (decoder.format == InstructionFormat::M) {
-                addressCalculator.loadHigh(registerFile[decoder.sReg+1]);
+            if (decoder.format == InstructionFormat::M || decoder.format == InstructionFormat::E) {
+                addressCalculator.loadHigh(registerFile[(decoder.sReg << 1) + 1]);
                 uint32_t memoryAddress = addressCalculator.calculate();
 
-                if (decoder.opcode == 2 || decoder.opcode == 3) {
-                    machine->debug(" --adding read");
-                    busUnit.addHighPriorityRead(memoryAddress);
-                }
-                else {
+                // b0x : read
+                // b1x : write
+                if (decoder.function & 2) {
                     uint16_t writeData = registerFile[decoder.dReg];
-                    uint8_t activeBytes = 3;
-                    if (decoder.opcode == 4) {
+                    uint8_t activeBytes = 0b11;
+                    // bx0 : byte
+                    // bx1 : word
+                    if (!(decoder.function & 1)) {
                         if (memoryAddress & 1) {
-                            activeBytes = 0x10;
+                            activeBytes = 0b10;
                             writeData = writeData << 8;
                         }
                         else {
-                            activeBytes = 0x01;
+                            activeBytes = 0b01;
                             writeData = writeData & 0x00ff;
                         }
                     }
                     busUnit.addHighPriorityWrite(memoryAddress, writeData, activeBytes);
                 }
+                else {
+                    machine->debug(" --adding read");
+                    busUnit.addHighPriorityRead(memoryAddress);
+                }
+            }
+            else if (decoder.format == InstructionFormat::B) {
+                // we emulate an extra cycle for decision time....
+                machine->debug(" --branch decision cycle");
             }
             else {
                 aluFunction = decoder.aluFunction;
@@ -144,26 +222,63 @@ void N16R::clockUp() {
                     ExtendFunction extend = ExtendFunction::NoExtend;
                     if (decoder.format == InstructionFormat::I) {
                         extend = ExtendFunction::SignAdditional;
-                        alu.load(registerFile[decoder.dReg+1], decoder.baseI);
+                        alu.load(registerFile[decoder.dReg + 1], decoder.baseI);
                     }
                     else {
-                        alu.load(registerFile[decoder.dReg+1], registerFile[decoder.sReg+1]);
+                        alu.load(registerFile[decoder.dReg + 1], registerFile[decoder.sReg + 1]);
                     }
-                    registerFile[decoder.dReg] = alu.calculate(aluFunction, extend, false);
+
+                    registerFile[decoder.dReg + 1] = alu.calculate(aluFunction, extend, false);
+                }
+                else if (decoder.format == InstructionFormat::R) {
+                    uint16_t tmp;
+                    switch (decoder.function) {
+                        case 001: // mov r32->r32
+                            registerFile[decoder.dReg + 1] = registerFile[decoder.sReg + 1];
+                            break;
+                        case 003: // xch r32<>r32
+                            tmp = registerFile[decoder.dReg + 1];
+                            registerFile[decoder.dReg + 1] = registerFile[decoder.sReg + 1];
+                            registerFile[decoder.sReg + 1] = tmp;
+                            break;
+                        case 034: // mov s32->r32
+                            registerFile[decoder.dReg + 1] = sysRegisterFile[decoder.sReg + 1];
+                            break;
+                        case 035: // mov r32->s32
+                            sysRegisterFile[decoder.dReg + 1] = registerFile[decoder.sReg + 1];
+                            break;
+                        case 042: // mov a32->r32
+                            registerFile[decoder.dReg + 1] = altRegisterFile[decoder.sReg + 1];
+                            break;
+                        case 043: // mov r32->a32
+                            altRegisterFile[decoder.dReg + 1] = registerFile[decoder.sReg + 1];
+                            break;
+                        case 045: // xch r32<>r32
+                            tmp = registerFile[decoder.dReg + 1];
+                            registerFile[decoder.dReg + 1] = altRegisterFile[decoder.sReg + 1];
+                            altRegisterFile[decoder.sReg + 1] = tmp;
+                            break;
+                        default:
+                            break;
+                    }
                 }
             }
             executionPhase = ExecutionPhase::Commit;
             break;
         case Commit:
             machine->debug(" -Commit");
-            if (decoder.format == InstructionFormat::M) {
-                if (decoder.opcode == 2 || decoder.opcode == 3) {
+            if (decoder.format == InstructionFormat::M || decoder.format == InstructionFormat::E) {
+                // b0x : read
+                // b1x : write
+                if (!(decoder.function & 2)) {
                     if (!busUnit.isReadReady() || !busUnit.isHighReadPriority()) {
                         machine->debug(" --Waiting for read");
                         break;
                     }
                     uint16_t readData = busUnit.getReadData();
-                    if (decoder.opcode == 2) {
+                    // bx0 : byte
+                    // bx1 : word
+                    if (!(decoder.function & 1)) {
                         if (addressCalculator.calculate() & 1) {
                             readData = readData >> 8;
                         }
@@ -173,27 +288,53 @@ void N16R::clockUp() {
                     }
                     registerFile[decoder.dReg] = readData;
                 }
+
                 instructionPointer = decoder.nextAddress;
                 executionPhase = ExecutionPhase::Fetch;
             }
             else if (decoder.format == InstructionFormat::J) {
+                // handle jal
+                if (decoder.opcode == 7) {
+                    registerFile[14] = ( decoder.nextAddress        & 0xffff);
+                    registerFile[15] = ((decoder.nextAddress >> 16) & 0xffff);
+                }
+
                 instructionPointer =
-                    (instructionPointer & 0xc000000) |
-                    ((uint32_t) decoder.baseI << 17) |
-                    ((uint32_t) decoder.extraI << 1);
+                    (instructionPointer & 0xc0000000) |
+                    (((uint32_t) decoder.baseI ) << 17) |
+                    (((uint32_t) decoder.extraI) <<  1);
                 executionPhase = ExecutionPhase::Fetch;
             }
-            else if (decoder.format == InstructionFormat::R && (decoder.function == 070 || decoder.function == 071)) {
-                instructionPointer = registerFile[decoder.dReg & 0x6] << 16 | registerFile[decoder.dReg & 0x6 | 1];
+            else if (decoder.format == InstructionFormat::R && (decoder.function == 070 || decoder.function == 071 || decoder.function == 072)) {
+                // start with a simple jr d.32
+                uint16_t rl = registerFile[ decoder.dReg << 1     ];
+                uint16_t rh = registerFile[(decoder.dReg << 1) + 1];
+
+                // oops, no it's a jr a.32
+                if (decoder.function == 071) {
+                    rl = altRegisterFile[ decoder.dReg << 1     ];
+                    rh = altRegisterFile[(decoder.dReg << 1) + 1];
+                }
+
+                // just kidding, we're jalr d.32
+                if (decoder.function == 072) {
+                    // store the link pointer
+                    registerFile[14] = ( decoder.nextAddress        & 0xffff);
+                    registerFile[15] = ((decoder.nextAddress >> 16) & 0xffff);
+                }
+
+                instructionPointer = ((uint32_t) rh) << 16 | rl;
                 executionPhase = ExecutionPhase::Fetch;
             }
             else {
-                if (decoder.format == InstructionFormat::B && core.branchTaken) {
+                if (decoder.format == InstructionFormat::B && alu.branchTaken(decoder.branchFunction)) {
+                    machine->debug(" --branch taken");
                     uint32_t branchOffset = decoder.extraI;
                     if (branchOffset & 0x00008000) {
                         branchOffset |= 0xffff0000;
                     }
-                    decoder.nextAddress += branchOffset;
+                    branchOffset <<= 1;
+                    decoder.nextAddress += branchOffset - 4;
                 }
 
                 if ((decoder.nextAddress & 0xffff0000) == (instructionPointer & 0xffff0000)) {
@@ -201,17 +342,48 @@ void N16R::clockUp() {
                     instructionPointer = decoder.nextAddress;
                 }
                 else {
+                    // We're simulating an extra cycle for the address carry.
                     executionPhase = ExecutionPhase::CommitAdditional;
                 }
             }
             break;
         case CommitAdditional:
             machine->debug(" -CommitAdditional");
+            // We're simulating an extra cycle for the address carry.
             instructionPointer = decoder.nextAddress;
+            executionPhase = ExecutionPhase::Fetch;
+            break;
+        case Exception:
+            machine->debug(" -Exception of type " + std::to_string(pendingException));
+            // set exception code
+            sysRegisterFile[0 ] = sysRegisterFile[0] & 0xff00 | (pendingException << 2);
+            // set execution state to 0,0 (kernel mode, exceptions disabled)
+            sysRegisterFile[1 ] = sysRegisterFile[1] & 0xffc0 | (sysRegisterFile[1] & 0xf) << 2;
+            // epc
+            sysRegisterFile[14] = (uint16_t) (instructionPointer & 0xffff);
+            sysRegisterFile[15] = (uint16_t) (instructionPointer >> 16);
+
+            pendingException = ExceptionType::ExceptionNone;
+
+            // jump to the exception handler (register $65)
+            instructionPointer = ((uint32_t) sysRegisterFile[11]) << 16 | sysRegisterFile[10];
+
             executionPhase = ExecutionPhase::Fetch;
             break;
         default:
             break;
+    }
+
+    // are interrupts enabled and not suppressed?
+    if (sysRegisterFile[1] & 1 && !exceptionSuppress) {
+        // are we at the end of an instruction?
+        if (executionPhase == ExecutionPhase::Fetch || executionPhase == ExecutionPhase::Exception) {
+            // do we have pending interrupts?
+            if (sysRegisterFile[0] & 0xff00) {
+                executionPhase = ExecutionPhase::Exception;
+                pendingException = ExceptionType::Interrupt;
+            }
+        }
     }
 
     // Execution buffer
@@ -231,8 +403,21 @@ void N16R::clockDown() {
     machine->debug("Processing bus unit");
     busUnit.clockDown();
 
+    uint16_t pendingInterrupts = busUnit.hasInterrupt();
+    pendingInterrupts <<= 8;
+    pendingInterrupts &= sysRegisterFile[1];
+    sysRegisterFile[0] = (sysRegisterFile[0] & 0xff) | pendingInterrupts;
+
     machine->debug("Processing execution buffer");
     executionBuffer.checkBus(busUnit);
+
+    std::stringstream rude;
+    rude << "status";
+    std::cout << command(rude) << std::endl;
+}
+
+bool N16R::isKernel() {
+    return (sysRegisterFile[1] & 0x2) == 0;
 }
 
 std::string N16R::command(std::stringstream &input) {
@@ -246,14 +431,29 @@ std::string N16R::command(std::stringstream &input) {
         response << "Ok.";
     }
     else if (commandWord == "status") {
-        response << "MReg         AReg" << std::endl;
+        response << "MReg           AReg           SReg" << std::endl;
         for (int i = 0; i < 8; i++) {
-            response << "0" << i << ": " << std::setw(6) << std::setfill('0') << std::oct << registerFile[i];
-            response << "   ";
-            response << "1" << i << ": " << std::setw(6) << std::setfill('0') << std::oct << altRegisterFile[i];
+            response << "0" << i << ": " << std::setw(4) << std::setfill('0') << std::hex << registerFile[i];
+            response << "       ";
+            response << "1" << i << ": " << std::setw(4) << std::setfill('0') << std::hex << altRegisterFile[i];
+            response << "       ";
+            response << "2" << i << ": " << std::setw(4) << std::setfill('0') << std::hex << sysRegisterFile[i];
             response << std::endl;
         }
-        response << "IP: " << std::setw(11) << std::setfill('0') << std::oct << instructionPointer << std::endl;
+        for (int i = 0; i < 8; i++) {
+            int e = i << 1;
+            uint32_t r = registerFile[e + 1];
+            r = (r << 16) | registerFile[e];
+            response << "4" << i << ": " << std::setw(8) << std::setfill('0') << std::hex << r << "   ";
+            r = altRegisterFile[e + 1];
+            r = (r << 16) | altRegisterFile[e];
+            response << "5" << i << ": " << std::setw(8) << std::setfill('0') << std::hex << r << "   ";
+            r = sysRegisterFile[e + 1];
+            r = (r << 16) | sysRegisterFile[e];
+            response << "6" << i << ": " << std::setw(8) << std::setfill('0') << std::hex << r;
+            response << std::endl;
+        }
+        response << "IP: " << std::setw(8) << std::setfill('0') << std::hex << instructionPointer << std::endl;
         executionBuffer.output(response);
         response << "Ok.";
     }
@@ -265,27 +465,36 @@ std::string N16R::command(std::stringstream &input) {
 
 void N16R::reset() {
     instructionPointer = resetAddress;
+    sysRegisterFile[1] = 0;
     executionBuffer.reset();
     busUnit.reset();
     executionPhase = ExecutionPhase::Fetch;
+    exceptionSuppress = false;
 }
 
-bool DecoderUnit::decode(uint16_t word, uint32_t instructionPointer) {
+int DecoderUnit::decode(uint16_t word, uint32_t instructionPointer) {
     hasTrap = false;
     extend = ExtendFunction::NoExtend;
     opcode = (uint8_t) ((word & 0xf000) >> 12);
     nextAddress = instructionPointer + 2;
-    if (opcode == 0 || opcode == 6) {
+    if (opcode == 0 || opcode == 2 || opcode == 6) {
         if (opcode == 0) {
             format = InstructionFormat::R;
         }
         else {
-            format = InstructionFormat::B;
+            if (opcode == 2) {
+                format = InstructionFormat::M;
+            }
+            else {
+                format = InstructionFormat::B;
+            }
             nextAddress += 2;
         }
+
         function = (word >> 0) & 077;
         dReg     = (word >> 9) & 007;
         sReg     = (word >> 6) & 007;
+        rReg     = 0;
         baseI    = 0;
         extraI   = 0;
     }
@@ -294,7 +503,8 @@ bool DecoderUnit::decode(uint16_t word, uint32_t instructionPointer) {
         function = 0;
         dReg     = 0;
         sReg     = 0;
-        baseI    = 0;
+        rReg     = 0;
+        baseI    = (word >> 0) & 0x0fff;
         extraI   = 0;
         nextAddress += 2;
     }
@@ -303,21 +513,51 @@ bool DecoderUnit::decode(uint16_t word, uint32_t instructionPointer) {
         function = (word >> 8) & 0x01;
         dReg     = (word >> 9) & 0x07;
         sReg     = 0;
+        rReg     = 0;
         baseI    = (word >> 0) & 0xff;
         extraI   = 0;
     }
-    else {
-        format   = InstructionFormat::M;
-        function = 0;
-        dReg     = (word >> 9) & 0x07;
-        sReg     = (word >> 6) & 0x06;
-        baseI    = (word >> 0) & 0x7f;
+    else if (opcode == 3) {
+        format   = InstructionFormat::E;
+        function = (word >> 0) & 007;
+        dReg     = (word >> 9) & 007;
+        sReg     = (word >> 6) & 007;
+        rReg     = (word >> 3) & 007;
+        baseI    = 0;
         extraI   = 0;
+    }
+    else {
+        return 1;
     }
 
     isDouble = false;
 
-    if (format == InstructionFormat::I) {
+    if (format == InstructionFormat::B) {
+        aluFunction = AluFunction::Sub;
+        switch (function) {
+            case 0:
+                branchFunction = BranchFunction::Equal;
+                break;
+            case 1:
+                branchFunction = BranchFunction::NotEqual;
+                break;
+            case 2:
+                branchFunction = BranchFunction::GreaterThan;
+                break;
+            case 3:
+                branchFunction = BranchFunction::NotGreater;
+                break;
+            case 4:
+                branchFunction = BranchFunction::LessThan;
+                break;
+            case 5:
+                branchFunction = BranchFunction::NotLess;
+            default:
+                // undefined instruction
+                break;
+        }
+    }
+    else if (format == InstructionFormat::I) {
         switch (opcode) {
             case 001:
                 isDouble = true;
@@ -357,42 +597,76 @@ bool DecoderUnit::decode(uint16_t word, uint32_t instructionPointer) {
     }
     else if (format == InstructionFormat::R) {
         switch (function) {
-            case 010:
+            case 001: // mov.32 D->D
+            case 003: // xch.32 D<>D
+            case 034: // mov.32 S->D
+            case 035: // mov.32 D->S
+            case 042: // mov.32 A->D
+            case 043: // mov.32 D->A
+            case 045: // xch.32 D<>A
+                aluFunction = AluFunction::NoFunction;
+                isDouble = true;
+                break;
+            case 010: // add.16
                 hasTrap = true;
-            case 011:
+            case 011: // addu.16
                 aluFunction = AluFunction::Add;
                 break;
-            case 012:
+            case 012: // sub.16
                 hasTrap = true;
-            case 013:
+            case 013: // subu.16
                 aluFunction = AluFunction::Sub;
                 break;
-            case 014:
+            case 014: // add.32
+                hasTrap = true;
+            case 015: // addu.32
                 aluFunction = AluFunction::Add;
                 isDouble = true;
                 break;
-            case 020:
+            case 016: // sub.32
+                hasTrap = true;
+            case 017: // subu.32
+                aluFunction = AluFunction::Sub;
+                isDouble = true;
+                break;
+            case 020: // and.16
                 aluFunction = AluFunction::And;
                 break;
-            case 021:
+            case 021: // or.16
                 aluFunction = AluFunction::Or;
                 break;
-            case 022:
+            case 022: // xor.16
                 aluFunction = AluFunction::Xor;
                 break;
-            case 023:
+            case 023: // nor.16
                 aluFunction = AluFunction::Nor;
                 break;
+            case 000: // mov.16 D->D
+            case 002: // xch.16 D<>D
+            case 030: // syscall
+            case 031: // eret
+            case 032: // mov.16 S->D
+            case 033: // mov.16 D->S
+            case 040: // mov.16 A->D
+            case 041: // mov.16 D->A
+            case 044: // mov.16 D<>A
+            case 070: // jr D
+            case 071: // jr A
+            case 072: // jalr D
             default:
                 aluFunction = AluFunction::NoFunction;
                 break;
+        }
+        if (isDouble) {
+            dReg <<= 1;
+            sReg <<= 1;
         }
     }
     else {
         aluFunction = AluFunction::NoFunction;
     }
 
-    return format == InstructionFormat::J || format == InstructionFormat::B;
+    return (format == InstructionFormat::J || format == InstructionFormat::B || format == InstructionFormat::M) ? 2 : 0;
 }
 
 void ArithmeticLogicUnit::load(uint16_t a, uint16_t b) {
@@ -438,12 +712,12 @@ uint16_t ArithmeticLogicUnit::calculate(AluFunction function, ExtendFunction ext
             result = ~(a | b);
             break;
         case LShift: // left shift
-            b = b & 0xf + 1;
+            b = (b & 0xf) + 1;
             result = a;
-            result = (result << b) & 0xffff;
+            result = (result << b);// & 0xffff;
             break;
         case RShiftA: // right shift, arithmetic
-            b = b & 0xf + 1;
+            b = (b & 0xf) + 1;
             result = a;
             if (a & 0x8000) {
                 result |= 0xffff0000;
@@ -451,7 +725,7 @@ uint16_t ArithmeticLogicUnit::calculate(AluFunction function, ExtendFunction ext
             result = (result >> b) & 0xffff;
             break;
         case RShift: // right shift, logical
-            b = b & 0xf + 1;
+            b = (b & 0xf) + 1;
             result = a;
             result = result >> b;
             break;
@@ -469,6 +743,24 @@ uint16_t ArithmeticLogicUnit::calculate(AluFunction function, ExtendFunction ext
 
     return (uint16_t) (result & 0xffff);
 }
+bool ArithmeticLogicUnit::branchTaken(BranchFunction func) {
+    switch (func) {
+        case Equal:
+            return zero;
+        case NotEqual:
+            return !zero;
+        case GreaterThan:
+            return !zero && !negative;
+        case NotGreater:
+            return zero || negative;
+        case LessThan:
+            return negative;
+        case NotLess:
+            return !negative;
+        default:
+            return false;
+    }
+}
 
 bool ArithmeticLogicUnit::getOverflow() {
     return overflow;
@@ -482,9 +774,9 @@ bool ArithmeticLogicUnit::getZero() {
 
 void AddressCalculator::loadLow(uint16_t low, uint16_t newOffset) {
     base = low;
-    offset = newOffset & 0x7f;
-    if (newOffset & 0x40) {
-       offset = offset | 0xffffff80; 
+    offset = newOffset & 0x7fff;
+    if (newOffset & 0x8000) {
+       offset = offset | 0xffff8000; 
     }
 }
 void AddressCalculator::loadHigh(uint16_t high) {
@@ -492,224 +784,6 @@ void AddressCalculator::loadHigh(uint16_t high) {
 }
 uint32_t AddressCalculator::calculate() {
     return base + offset;
-}
-
-bool ExecutionBuffer::isEmpty() {
-    return head == tail;
-}
-
-bool ExecutionBuffer::isFull() {
-    return (tail + 3) % 4 == head;
-}
-
-uint8_t ExecutionBuffer::size() {
-    return (head - tail) % 4;
-}
-
-bool ExecutionBuffer::hasAddress(uint32_t requestAddress) {
-    if (isEmpty()) {
-        return false;
-    }
-
-    for (uint8_t i = tail; (head - i) % 4 != 0; i = (i + 1) % 4) {
-        if (requestAddress == address[i]) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-void ExecutionBuffer::addRequest(uint32_t request) {
-    if (hasAddress(request) || (pendingRequest && requestedAddress == request)) {
-        return;
-    }
-
-    requestedAddress = request;
-    pendingRequest = true;
-}
-
-bool ExecutionBuffer::hasRequest() {
-    return pendingRequest;
-}
-
-uint32_t ExecutionBuffer::getNextAddress() {
-    if (pendingRequest) {
-        return requestedAddress;
-    }
-
-    return address[(head + 3) % 4] + 2;
-}
-
-void ExecutionBuffer::checkBus(BusUnit &busUnit) {
-    if (hasRequest() && busUnit.isReadReady() && !busUnit.isHighReadPriority()) {
-        push(requestedAddress, busUnit.getReadData());
-        pendingRequest = false;
-    }
-}
-
-uint16_t ExecutionBuffer::popTo(uint32_t request) {
-    request = request & 0xfffffffe;
-
-    uint16_t value;
-    uint8_t i;
-    for (i = tail; (head - i) % 4 != 0; i = (i + 1) % 4) {
-        if (request == address[i]) {
-            value = buffer[i];
-            tail = i;
-            break;
-        }
-    }
-
-    return value;
-}
-
-void ExecutionBuffer::push(uint32_t setAddress, uint16_t word) {
-    buffer[head] = word;
-    address[head] = setAddress;
-    uint8_t oldHead = head;
-    head = (head + 1) % 4;
-
-    if (pendingRequest && setAddress == requestedAddress) {
-        if (head == tail) {
-            tail = oldHead;
-        }
-        pendingRequest = false;
-    }
-}
-
-void ExecutionBuffer::reset() {
-    head = tail = 0;
-    pendingRequest = false;
-}
-void ExecutionBuffer::output(std::stringstream &output) {
-    for (int i = 0; i < 4; i++) {
-        output << "B" << i << ": ";
-        if (head == tail) {
-            output << " ";
-        }
-        else if (i == head) {
-            output << "h";
-        }
-        else if (i == tail) {
-            output << "t";
-        }
-        else {
-            output << " ";
-        }
-
-        output << " 0" << std::setw(11) << std::setfill('0') << std::oct << address[i];
-        output << " 0" << std::setw(6) << std::setfill('0') << std::oct << buffer[i];
-        output << std::endl;
-    }
-}
-
-void BusUnit::setBusInterface(std::shared_ptr<NBusInterface> interface) {
-    this->interface = interface;
-}
-void BusUnit::reset() {
-    phase = BusPhase::Idle;
-    readReady = false;
-    readPriority = false;
-    hasLowPriority = false;
-    hasHighPriority = false;
-    hasHighPriorityWrite = false;
-}
-
-void BusUnit::clockUp() {
-    interface->deassert(NBusSignal::Address);
-    interface->deassert(NBusSignal::Data);
-    interface->deassert(NBusSignal::WriteEnable);
-    interface->deassert(NBusSignal::ReadEnable);
-
-    if (phase == BusPhase::Idle) {
-        if (hasHighPriority) {
-            interface->assert(NBusSignal::Address, highPriorityAddress);
-            if (hasHighPriorityWrite) {
-                interface->assert(NBusSignal::Data, highPriorityData);
-                interface->assert(NBusSignal::WriteEnable, writeMode);
-                phase = BusPhase::Write;
-            }
-            else {
-                interface->assert(NBusSignal::ReadEnable, 1);
-                phase = BusPhase::HighRead;
-            }
-        }
-        else if (hasLowPriority) {
-            interface->assert(NBusSignal::Address, lowPriorityAddress);
-            interface->assert(NBusSignal::ReadEnable, 1);
-            phase = BusPhase::LowRead;
-        }
-    }
-}
-void BusUnit::clockDown() {
-    switch (phase) {
-        case BusPhase::LowRead:
-        case BusPhase::HighRead:
-            if (phase == BusPhase::LowRead) {
-                phase = BusPhase::LowReadWait;
-                hasLowPriority = false;
-            }
-            else {
-                phase = BusPhase::HighReadWait;
-                hasHighPriority = false;
-            }
-            break;
-        case BusPhase::LowReadWait:
-        case BusPhase::HighReadWait:
-            if (interface->sense(NBusSignal::NotReady)) {
-                break;
-            }
-
-            readData = (uint16_t) (interface->sense(NBusSignal::Data) & 0xffff);
-            readReady = true;
-            readPriority = phase == BusPhase::HighReadWait;
-            phase = BusPhase::Idle;
-            break;
-        case BusPhase::Write:
-            phase = BusPhase::WriteWait;
-            hasHighPriority = false;
-            hasHighPriorityWrite = false;
-            break;
-        case BusPhase::WriteWait:
-            if (interface->sense(NBusSignal::NotReady)) {
-                break;
-            }
-
-            phase = BusPhase::Idle;
-            break;
-        case BusPhase::Idle:
-        default:
-            break;
-    }
-}
-
-void BusUnit::addLowPriorityRead(uint32_t address) {
-    lowPriorityAddress = address;
-    hasLowPriority = true;
-}
-void BusUnit::addHighPriorityRead(uint32_t address) {
-    highPriorityAddress = address;
-    hasHighPriority = true;
-    hasHighPriorityWrite = false;
-}
-void BusUnit::addHighPriorityWrite(uint32_t address, uint16_t data, uint8_t activeBytes) {
-    highPriorityAddress = address;
-    highPriorityData = data;
-    hasHighPriority = true;
-    hasHighPriorityWrite = true;
-    writeMode = activeBytes;
-}
-
-bool BusUnit::isReadReady() {
-    return readReady;
-}
-bool BusUnit::isHighReadPriority() {
-    return readPriority;
-}
-uint16_t BusUnit::getReadData() {
-    readReady = false;
-    return readData;
 }
 
 }; // namespace n16r

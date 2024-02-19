@@ -37,7 +37,7 @@ void NBusInterface::clockDown() {
 NBus::NBus() {
     signalMasks[NBusSignal::Address] = 0xffffff;
     signalMasks[NBusSignal::Data] = 0xffff;
-    signalMasks[NBusSignal::WriteEnable] = 0x11;
+    signalMasks[NBusSignal::WriteEnable] = 0b11;
     signalMasks[NBusSignal::ReadEnable ] = 1;
     signalMasks[NBusSignal::Interrupt0] = 1;
     signalMasks[NBusSignal::Interrupt1] = 1;
@@ -131,9 +131,9 @@ std::string NBus::command(std::stringstream &input) {
         }
     }
     else {
-        stream << "ADDR----- DATA--- WR RD INT- R" << std::endl;
-        stream << "0" << std::setfill('0') << std::setw(8) << std::oct << selfInterface->sense(NBusSignal::Address    ) << " ";
-        stream << "0" << std::setw(6) << selfInterface->sense(NBusSignal::Data       ) << " " << std::setbase(10);
+        stream << "ADDR---- DATA-- WR RD INT- H" << std::endl;
+        stream << "0x" << std::setfill('0') << std::setw(6) << std::hex << selfInterface->sense(NBusSignal::Address) << " ";
+        stream << "0x" << std::setfill('0') << std::setw(4) << std::hex << selfInterface->sense(NBusSignal::Data) << " " << std::setbase(10);
         stream << std::bitset<2>(selfInterface->sense(NBusSignal::WriteEnable)) << " ";
         stream << std::bitset<2>(selfInterface->sense(NBusSignal::ReadEnable )) << " ";
         stream << selfInterface->sense(NBusSignal::Interrupt0) << selfInterface->sense(NBusSignal::Interrupt1);

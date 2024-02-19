@@ -4,5 +4,7 @@ target_sources(sysnp
         memory.h
         nbus.cpp
         nbus.h
+        serial.cpp
+        serial.h
 )
 add_subdirectory(cpu)
