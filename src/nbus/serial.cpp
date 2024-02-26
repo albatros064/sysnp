@@ -153,10 +153,6 @@ void Serial::clockUp() {
     }
 
     if (hasInData || (lastOutData != hasOutData)) {
-std::cout << "********************* asserting interrupt" << std::endl;
-std::cout << "hasInData  : " << (hasInData   ? "y" : "n") << std::endl;
-std::cout << "lastOutData: " << (lastOutData ? "y" : "n") << std::endl;
-std::cout << "hasOutData : " << (hasOutData  ? "y" : "n") << std::endl;
         machine->debug(6, "Serial::clockUp() Interrupting");
         interface->assert(interrupt, 1);
     }
@@ -192,12 +188,14 @@ void Serial::clockDown() {
 }
 
 std::string Serial::command(std::stringstream &input) {
-    std::cout << "Serial" << std::endl;
-    std::cout << "hasInData  : " << (hasInData   ? "y" : "n") << std::endl;
-    std::cout << "lastOutData: " << (lastOutData ? "y" : "n") << std::endl;
-    std::cout << "hasOutData : " << (hasOutData  ? "y" : "n") << std::endl;
-    std::cout << "inData     : " << std::setw(2) << std::setfill('0') << (int) inData << std::endl;
-    return "Ok.";
+    std::stringstream output;
+    output << "Serial" << std::endl;
+    output << "hasInData  : " << (hasInData   ? "y" : "n") << std::endl;
+    output << "lastOutData: " << (lastOutData ? "y" : "n") << std::endl;
+    output << "hasOutData : " << (hasOutData  ? "y" : "n") << std::endl;
+    output << "inData     : " << std::setw(2) << std::setfill('0') << (int) inData << std::endl;
+    output << "Ok.";
+    return output.str();
 }
 
 void ttyExecute(Serial& serial, bool reading) {
@@ -224,7 +222,6 @@ void Serial::ttyRead() {
     inDataMutex.lock();
     inData = buffer;
     hasInData = true;
-std::cout << "got data" << std::endl;
     inDataMutex.unlock();
 }
 

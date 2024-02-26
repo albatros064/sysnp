@@ -58,7 +58,7 @@ enum InstructionFormat {
     NoFormat
 };
 enum AluFunction {
-    Add, Sub, And, Or, Xor, Nor, LShift, RShift, RShiftA, Lui, NoFunction
+    Add, Sub, And, Or, Xor, Nor, LShift, RShift, RShiftA, Lui, Lli, NoFunction
 };
 enum BranchFunction {
     Equal,      // equal

@@ -8,10 +8,8 @@ namespace nbus {
 
 namespace n16r {
 
-N16R::N16R() {
-}
-N16R::~N16R() {
-}
+N16R::N16R() {}
+N16R::~N16R() {}
 
 void N16R::init(const libconfig::Setting &setting) {
     setting.lookupValue("resetAddress", resetAddress);
@@ -36,7 +34,6 @@ void N16R::clockUp() {
 
     switch (executionPhase) {
         case Fetch:
-            exceptionSuppress = false;
             machine->debug(" -Fetch");
             if (executionBuffer.hasAddress(instructionPointer)) {
                 machine->debug(" --Decoding");
@@ -57,6 +54,7 @@ void N16R::clockUp() {
                     machine->debug(" --Proceeding to execute");
                     executionPhase = ExecutionPhase::Execute;
                 }
+                exceptionSuppress = false;
             }
             else {
                 machine->debug(" --Requesting");
@@ -116,10 +114,26 @@ void N16R::clockUp() {
                         registerFile[decoder.dReg] = altRegisterFile[decoder.sReg];
                         altRegisterFile[decoder.sReg] = tmp;
                         break;
-                    case 030: // syscall
+                    case 030: // mov s16->r16
+                    case 032: // mov s32->r32
+                        if (!isKernel()) {
+                            pendingException = ExceptionType::ReservedInstruction;
+                            break;
+                        }
+                        registerFile[decoder.dReg] = sysRegisterFile[decoder.sReg];
+                        break;
+                    case 031: // mov r16->s16
+                    case 033: // mov r32->s32
+                        if (!isKernel()) {
+                            pendingException = ExceptionType::ReservedInstruction;
+                            break;
+                        }
+                        sysRegisterFile[decoder.dReg] = registerFile[decoder.sReg];
+                        break;
+                    case 050: // syscall
                         pendingException = ExceptionType::Syscall;
                         break;
-                    case 031: // eret
+                    case 051: // eret
                         if (!isKernel()) {
                             pendingException = ExceptionType::ReservedInstruction;
                             break;
@@ -128,22 +142,6 @@ void N16R::clockUp() {
                         tmp = sysRegisterFile[1] & 0xfff0 | ((sysRegisterFile[1] >> 2) & 0xf);
                         sysRegisterFile[1] = tmp;
                         exceptionSuppress = true;
-                        break;
-                    case 032: // mov s16->r16
-                    case 034: // mov s32->r32
-                        if (!isKernel()) {
-                            pendingException = ExceptionType::ReservedInstruction;
-                            break;
-                        }
-                        registerFile[decoder.dReg] = sysRegisterFile[decoder.sReg];
-                        break;
-                    case 033: // mov r16->s16
-                    case 035: // mov r32->s32
-                        if (!isKernel()) {
-                            pendingException = ExceptionType::ReservedInstruction;
-                            break;
-                        }
-                        sysRegisterFile[decoder.dReg] = registerFile[decoder.sReg];
                         break;
                     case 070: // jr r32
                     case 071: // jr a32
@@ -163,6 +161,7 @@ void N16R::clockUp() {
             }
             else if (decoder.format == InstructionFormat::E) {
                 machine->debug(" --E instruction");
+
                 addressCalculator.loadLow(registerFile[decoder.sReg << 1], registerFile[decoder.rReg]);
             }
 
@@ -241,10 +240,10 @@ void N16R::clockUp() {
                             registerFile[decoder.dReg + 1] = registerFile[decoder.sReg + 1];
                             registerFile[decoder.sReg + 1] = tmp;
                             break;
-                        case 034: // mov s32->r32
+                        case 032: // mov s32->r32
                             registerFile[decoder.dReg + 1] = sysRegisterFile[decoder.sReg + 1];
                             break;
-                        case 035: // mov r32->s32
+                        case 033: // mov r32->s32
                             sysRegisterFile[decoder.dReg + 1] = registerFile[decoder.sReg + 1];
                             break;
                         case 042: // mov a32->r32
@@ -411,9 +410,9 @@ void N16R::clockDown() {
     machine->debug("Processing execution buffer");
     executionBuffer.checkBus(busUnit);
 
-    std::stringstream rude;
-    rude << "status";
-    std::cout << command(rude) << std::endl;
+    //std::stringstream rude;
+    //rude << "status";
+    //std::cout << command(rude) << std::endl;
 }
 
 bool N16R::isKernel() {
@@ -561,8 +560,10 @@ int DecoderUnit::decode(uint16_t word, uint32_t instructionPointer) {
         switch (opcode) {
             case 001:
                 isDouble = true;
-                aluFunction = function ? AluFunction::Add : AluFunction::Sub;
+                aluFunction = function ? AluFunction::Sub : AluFunction::Add;
                 extend = ExtendFunction::Sign;
+                dReg <<= 1;
+                sReg <<= 1;
                 break;
             case 010:
                 aluFunction = AluFunction::Add;
@@ -573,15 +574,19 @@ int DecoderUnit::decode(uint16_t word, uint32_t instructionPointer) {
                 extend = function ? ExtendFunction::Zero : ExtendFunction::Sign;
                 break;
             case 012:
-                aluFunction = function ? AluFunction::Or: AluFunction::And;
+                aluFunction = function ? AluFunction::Lli : AluFunction::Lui;
                 extend = ExtendFunction::Zero;
                 break;
             case 013:
-                aluFunction = function ? AluFunction::Lui : AluFunction::Xor;
+                aluFunction = function ? AluFunction::Or : AluFunction::And;
                 extend = ExtendFunction::Zero;
                 break;
             case 014:
-                aluFunction = AluFunction::LShift;
+                aluFunction = function ? AluFunction::LShift : AluFunction::Xor;
+                if (!function) {
+                    extend = ExtendFunction::Zero;
+                }
+                break;
                 break;
             case 015:
                 aluFunction = function ? AluFunction::RShift : AluFunction::RShiftA;
@@ -599,8 +604,8 @@ int DecoderUnit::decode(uint16_t word, uint32_t instructionPointer) {
         switch (function) {
             case 001: // mov.32 D->D
             case 003: // xch.32 D<>D
-            case 034: // mov.32 S->D
-            case 035: // mov.32 D->S
+            case 032: // mov.32 S->D
+            case 033: // mov.32 D->S
             case 042: // mov.32 A->D
             case 043: // mov.32 D->A
             case 045: // xch.32 D<>A
@@ -643,13 +648,14 @@ int DecoderUnit::decode(uint16_t word, uint32_t instructionPointer) {
                 break;
             case 000: // mov.16 D->D
             case 002: // xch.16 D<>D
-            case 030: // syscall
-            case 031: // eret
-            case 032: // mov.16 S->D
-            case 033: // mov.16 D->S
+            case 030: // mov.16 S->D
+            case 031: // mov.16 D->S
             case 040: // mov.16 A->D
             case 041: // mov.16 D->A
             case 044: // mov.16 D<>A
+            case 050: // syscall
+            case 051: // eret
+            //se 052: // hlt
             case 070: // jr D
             case 071: // jr A
             case 072: // jalr D
@@ -732,6 +738,9 @@ uint16_t ArithmeticLogicUnit::calculate(AluFunction function, ExtendFunction ext
         case Lui: // lui
             result = (b & 0xff) << 8;
             break;
+        case Lli: // lli
+            result = b & 0xff;
+            break;
         default:
             result = 0;
             break;
@@ -774,9 +783,9 @@ bool ArithmeticLogicUnit::getZero() {
 
 void AddressCalculator::loadLow(uint16_t low, uint16_t newOffset) {
     base = low;
-    offset = newOffset & 0x7fff;
-    if (newOffset & 0x8000) {
-       offset = offset | 0xffff8000; 
+    offset = newOffset;
+    if (offset & 0x8000) {
+       offset |= 0xffff0000; 
     }
 }
 void AddressCalculator::loadHigh(uint16_t high) {

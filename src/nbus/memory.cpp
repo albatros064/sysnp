@@ -131,7 +131,32 @@ void Memory::clockDown() {
 }
 
 std::string Memory::command(std::stringstream &input)  {
-    return "Ok.";
+    std::stringstream response;
+    std::string locationStr;
+    uint16_t length = 64;
+    uint32_t location;
+
+    input >> locationStr >> length;
+
+    location = std::stoul(locationStr, nullptr, 0);
+    location >>= 3;
+    location <<= 3;
+    for (int i = 0; i < length / 8; i++) {
+        response << std::setw(8) << std::setfill('0') << std::hex << (location + (i << 3)) << " ";
+        for (int b = 0; b < 8; b++) {
+            uint32_t address = location + (i << 3) + b;
+            for (auto module: modules) {
+                if (module->containsAddress(address)) {
+                    uint8_t datum = module->read(address);
+                    response << " " << std::setw(2) << std::setfill('0') << std::hex << (int) datum;
+                    break;
+                }
+            }
+        }
+        response << std::endl;
+    }
+    response << "Ok.";
+    return response.str();
 }
 
 MemoryModule::MemoryModule(uint32_t start, uint32_t size, bool rom, std::string romFile, uint8_t readLatency, uint8_t writeLatency, std::string name):

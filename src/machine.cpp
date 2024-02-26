@@ -128,6 +128,7 @@ void Machine::run() {
     debug("Fetching bus device");
     std::shared_ptr<nbus::NBus> bus = std::static_pointer_cast<nbus::NBus>(getDevice("nbus"));
 
+    bool verbose = false;
     std::string command;
     std::string commandWord;
     bool running = true;
@@ -135,7 +136,7 @@ void Machine::run() {
     debug("Entering loop");
     debug("");
 
-    bool clockState = false;
+    RunMode runMode = RunMode::SteppingMode;
     while (running) {
         std::cout << "> ";
         std::cin.getline(commandBuffer, 255);
@@ -145,78 +146,76 @@ void Machine::run() {
 
         if (command == "q" || command == "quit") {
             running = false;
+            stopRunning();
         }
-        else if (command == "clock") {
-            commandWord = "pulse";
-            cs >> commandWord;
+        else if (command == "b" || command == "bp") {
+        }
+        else if (runMode == RunMode::SteppingMode) {
+            if (command == "pulse") {
+                commandWord = "1";
+                cs >> commandWord;
 
-            if (commandWord == "pulse") {
-                std::stringstream com;
-                bus->clockUp();
-                std::cout << bus->command(com) << std::endl;
-                bus->clockDown();
-            }
-            else if (commandWord == "rise") {
-                bus->clockUp();
-            }
-            else if (commandWord == "fall") {
-                bus->clockDown();
-            }
-            else if (commandWord == "set") {
-                if (!clockState) {
-                    bus->clockUp();
-                    clockState = true;
-                }
-            }
-            else if (commandWord == "clear") {
-                if (clockState) {
-                    bus->clockDown();
-                    clockState = false;
-                }
-            }
-            else {
-                int repeatCount = 0;
+                int repeatCount = 1;
                 try {
                     repeatCount = std::stoi(commandWord);
                 }
                 catch (std::invalid_argument e) {}
 
                 for (; repeatCount > 0; repeatCount--) {
-                    std::stringstream com;
-                    std::cout << "Pulse" << std::endl;
                     bus->clockUp();
-                    std::cout << bus->command(com) << std::endl;
                     bus->clockDown();
                 }
             }
-        }
-        else if (command == "bus") {
-            std::cout << bus->command(cs) << std::endl;
-        }
-        else if (command == "dev") {
-            commandWord = "";
-            cs >> commandWord;
-            if (commandWord.empty()) {
-                std::cout << "Invalid device." << std::endl;
-            }
-            else {
-                auto device = getDevice(commandWord);
-                if (device) {
-                    std::cout << device->command(cs) << std::endl;
+            else if (command == "run") {
+                commandWord = "0";
+                cs >> commandWord;
+
+                runMode = RunMode::FreeRunMode;
+
+                int clockRate = 0;
+
+                try {
+                    clockRate = std::stoi(commandWord);
                 }
-                else {
+                catch (std::invalid_argument e) {}
+
+                clockRunning = true;
+                runThread = std::thread(machineRun, std::ref(*this), clockRate);
+            }
+            else if (command == "bus") {
+                std::cout << bus->command(cs) << std::endl;
+            }
+            else if (command == "dev") {
+                commandWord = "";
+                cs >> commandWord;
+                if (commandWord.empty()) {
                     std::cout << "Invalid device." << std::endl;
                 }
+                else {
+                    auto device = getDevice(commandWord);
+                    if (device) {
+                        std::cout << device->command(cs) << std::endl;
+                    }
+                    else {
+                        std::cout << "Invalid device." << std::endl;
+                    }
+                }
+            }
+            else if (command == "config") {
+                cs >> commandWord;
+                if (commandWord == "debug") {
+                    int newDebug = -1;
+                    cs >> newDebug;
+                    if (newDebug >= 0) {
+                        debugLevel = newDebug;
+                    }
+                }
             }
         }
-        else if (command == "config") {
-            cs >> commandWord;
-            if (commandWord == "debug") {
-                int newDebug = -1;
-                cs >> newDebug;
-                if (newDebug >= 0) {
-                    debugLevel = newDebug;
-                }
+        else if (runMode == RunMode::FreeRunMode) {
+            if (command == "p" || command == "pause") {
+                stopRunning();
+                runMode = RunMode::SteppingMode;
             }
         }
         else if (command != "") {
@@ -227,104 +226,33 @@ void Machine::run() {
     debug("Exiting");
 }
 
-/*
+void Machine::startRunning(int clockRate) {
+    std::shared_ptr<nbus::NBus> bus = std::static_pointer_cast<nbus::NBus>(getDevice("nbus"));
 
-void Machine::run() {
-	uint8_t instr_length;
-	uint8_t bytes[3] = { _cpu->data_bits() / 8, _cpu->logical_bits() / 8, _cpu->physical_bits() / 8 };
+    runCycles = 0;
+    runStart = std::chrono::steady_clock::now();
+    while (clockRunning) {
+        bus->clockUp();
+        bus->clockDown();
 
-	char buffer[16];
-
-	uint16_t  register_count[4] = { 0, 0, 0, 0 };
-	uint64_t *registers[2];
-
-	registers[0] = _cpu->register_file(register_count[0]);
-	registers[1] = _cpu->register_aux (register_count[1]);
-
-	register_count[2] = register_count[0] / 16; register_count[0] % 16 ? register_count[2]++ : register_count[2];
-	register_count[3] = register_count[1] / 16; register_count[1] % 16 ? register_count[3]++ : register_count[3];
-
-	char *register_filler = (char *) malloc(bytes[0] * 2 + 8);
-	int i;
-	for (i = 0; i < bytes[0] * 2 + 7; i++) {
-		register_filler[i] = ' ';
-	}
-	register_filler[i] = 0;
-
-	_cpu->reset();
-	do {
-		uint64_t instr_addr = _cpu->step(instr_length);
-
-		printf("\n----\n PC:    0x%0*lx\n Instr: 0x", bytes[1] * 2, instr_addr);
-		for(int i = 0; i < instr_length; i++) {
-			printf("%02x", _memory[instr_addr + i]);
-		}
-		printf("\n        %s\n----\n Registers:\n", _cpu->decode(instr_addr) );
-		for (int i = 0; i < 16; i++) {
-			for (int j = 0; j < register_count[2]; j++) {
-				if (j * 16 + i < register_count[0]) {
-					printf(" %03d: 0x%0*lx", j * 16 + i, bytes[0] * 2, registers[0][j * 16 + i]);
-				}
-				else {
-					printf(" %s", register_filler);
-				}
-			}
-
-			printf(" |");
-			for (int j = 0; j < register_count[3]; j++) {
-				if (j * 16 + i < register_count[1]) {
-					printf(" %03d: 0x%0*lx", j * 16 + i, bytes[0] * 2, registers[1][j * 16 + i]);
-				}
-				else {
-					printf(" %s", register_filler);
-				}
-			}
-			printf("\n");
-		}
-
-		printf("----\n Memory:\n");
-		uint64_t stack_pointer = _cpu->stack_pointer() % _memory_size;
-		uint64_t stack_pointer_min = stack_pointer - stack_pointer % 16;
-		uint64_t stack_pointer_max = stack_pointer_min + 256;
-		if (stack_pointer_max >= _memory_size) {
-			stack_pointer_max = _memory_size - 16;
-		}
-
-		for (int i = 0; i < 16; i++) {
-			uint64_t _mem = _cpu->instr_pointer() + i * 16;
-			uint64_t _stk = (stack_pointer_max - i * 16);
-			_mem -= _mem % 16;
-			printf(" 0x%0*lx:", bytes[0] * 2, _mem);
-			for (int j = 0; j < 16; j++) {
-				printf(" %02x", _memory[_mem + j]);
-			}
-
-			printf("  | ");
-
-			if (_stk >= stack_pointer_min) {
-				printf(" 0x%0*lx:", bytes[0] * 2, _stk);
-
-				for (int j = 15; j >= 0; j--) {
-					if (_stk + j < stack_pointer) {
-						printf("   ");
-					}
-					else {
-						printf(" %02x", _memory[_stk + j]);
-					}
-				}
-			}
-
-			printf("\n");
-		}//
-		printf("----\n");
-
-		gets(buffer);
-		if (buffer[0] == 'r') {
-			_cpu->reset();
-		}
-	}
-	while (buffer[0] != 'q');
+        runCycles++;
+    }
+    runEnd = std::chrono::steady_clock::now();
 }
-*/
+void Machine::stopRunning() {
+    clockRunning = false;
+    if (runThread.joinable()) {
+        runThread.join();
+    }
+
+    auto diff = std::chrono::nanoseconds(runEnd - runStart).count();
+    std::cout << "ticks: " << runCycles << std::endl;
+    std::cout << "ns:    " << diff << std::endl;
+    std::cout << "       " << (runCycles / ((double) diff / 1000000000)) << "Hz" << std::endl;
+}
+
+void machineRun(Machine& machine, int clockRate) {
+    machine.startRunning(clockRate);
+}
 
 }; // namespace
