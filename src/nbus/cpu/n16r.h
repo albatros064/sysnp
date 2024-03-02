@@ -204,8 +204,6 @@ class N16R : public NBusDevice {
         uint32_t instructionPointer;
 
         ExecutionPhase executionPhase;
-        uint32_t busRequest;
-        bool     busBusy;
 
         ExecutionBuffer executionBuffer;
         BusUnit busUnit;
@@ -214,7 +212,6 @@ class N16R : public NBusDevice {
         AddressCalculator addressCalculator;
 
         ExceptionType pendingException;
-        bool exceptionSuppress;
 
         uint32_t resetAddress;
 

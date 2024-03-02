@@ -54,7 +54,6 @@ void N16R::clockUp() {
                     machine->debug(" --Proceeding to execute");
                     executionPhase = ExecutionPhase::Execute;
                 }
-                exceptionSuppress = false;
             }
             else {
                 machine->debug(" --Requesting");
@@ -134,6 +133,8 @@ void N16R::clockUp() {
                         pendingException = ExceptionType::Syscall;
                         break;
                     case 051: // eret
+                    case 052: // eret r32
+                    case 053: // eret a32
                         if (!isKernel()) {
                             pendingException = ExceptionType::ReservedInstruction;
                             break;
@@ -141,7 +142,6 @@ void N16R::clockUp() {
                         // shift the kernel state stack
                         tmp = sysRegisterFile[1] & 0xfff0 | ((sysRegisterFile[1] >> 2) & 0xf);
                         sysRegisterFile[1] = tmp;
-                        exceptionSuppress = true;
                         break;
                     case 070: // jr r32
                     case 071: // jr a32
@@ -304,6 +304,20 @@ void N16R::clockUp() {
                     (((uint32_t) decoder.extraI) <<  1);
                 executionPhase = ExecutionPhase::Fetch;
             }
+            else if (decoder.format == InstructionFormat::R && (decoder.function == 052 || decoder.function == 053)) {
+                // start with a simple eret d.32
+                uint16_t rl = registerFile[ decoder.dReg << 1     ];
+                uint16_t rh = registerFile[(decoder.dReg << 1) + 1];
+
+                // oops, no it's an eret a.32
+                if (decoder.function == 053) {
+                    rl = altRegisterFile[ decoder.dReg << 1     ];
+                    rh = altRegisterFile[(decoder.dReg << 1) + 1];
+                }
+
+                instructionPointer = ((uint32_t) rh) << 16 | rl;
+                executionPhase = ExecutionPhase::Fetch;
+            }
             else if (decoder.format == InstructionFormat::R && (decoder.function == 070 || decoder.function == 071 || decoder.function == 072)) {
                 // start with a simple jr d.32
                 uint16_t rl = registerFile[ decoder.dReg << 1     ];
@@ -374,7 +388,7 @@ void N16R::clockUp() {
     }
 
     // are interrupts enabled and not suppressed?
-    if (sysRegisterFile[1] & 1 && !exceptionSuppress) {
+    if (sysRegisterFile[1] & 1) {
         // are we at the end of an instruction?
         if (executionPhase == ExecutionPhase::Fetch || executionPhase == ExecutionPhase::Exception) {
             // do we have pending interrupts?
@@ -468,7 +482,6 @@ void N16R::reset() {
     executionBuffer.reset();
     busUnit.reset();
     executionPhase = ExecutionPhase::Fetch;
-    exceptionSuppress = false;
 }
 
 int DecoderUnit::decode(uint16_t word, uint32_t instructionPointer) {
@@ -655,7 +668,8 @@ int DecoderUnit::decode(uint16_t word, uint32_t instructionPointer) {
             case 044: // mov.16 D<>A
             case 050: // syscall
             case 051: // eret
-            //se 052: // hlt
+            case 052: // eret D
+            case 053: // eret A
             case 070: // jr D
             case 071: // jr A
             case 072: // jalr D
