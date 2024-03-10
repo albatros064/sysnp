@@ -8,11 +8,18 @@ set(THREADS_PREFER_PTHREAD_FLAG ON)
 set(CMAKE_CXX_STANDARD 20)
 
 find_package(Threads REQUIRED)
-add_executable(sysnp main.cpp)
-target_link_libraries(sysnp PUBLIC config++ PRIVATE Threads::Threads)
-find_package(Boost COMPONENTS unit_test_framework REQUIRED)
-add_executable(test)
-target_link_libraries(test PUBLIC config++ PRIVATE Threads::Threads Boost::unit_test_framework)
 
+add_library(libsysnp OBJECT)
 add_subdirectory(machine)
-add_subdirectory(tests)
+
+add_executable(sysnp main.cpp $<TARGET_OBJECTS:libsysnp>)
+target_link_libraries(sysnp PUBLIC config++ PRIVATE Threads::Threads)
+
+
+if (NOT CMAKE_BUILD_TYPE MATCHES Release)
+    find_package(Boost COMPONENTS unit_test_framework REQUIRED)
+    add_executable(test $<TARGET_OBJECTS:libsysnp>)
+    target_link_libraries(test PUBLIC config++ PRIVATE Threads::Threads Boost::unit_test_framework)
+    target_include_directories(test PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/machine>)
+    add_subdirectory(tests)
+endif()

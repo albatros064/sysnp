@@ -1,4 +1,4 @@
-target_sources(sysnp
+target_sources(libsysnp
     PRIVATE
         machine.cpp
         machine.h

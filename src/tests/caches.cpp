@@ -1,6 +1,6 @@
 #define BOOST_TEST_MODULE Cache
 #include <boost/test/unit_test.hpp>
-#include "../machine/nbus/cpu/cache.h"
+#include "nbus/cpu/cache.h"
 
 using namespace sysnp::nbus::n16r;
 
