@@ -1,16 +1,18 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(sysnp VERSION 0.1)
+project(sysnp VERSION 0.9)
 
 set(CMAKE_CPP_FLAGS "-g")
 
 set(THREADS_PREFER_PTHREAD_FLAG ON)
+set(CMAKE_CXX_STANDARD 20)
+
 find_package(Threads REQUIRED)
-
-#find_package(PkgConfig)
-#pkg_check_modules(LIBCONFIG_PLUSPLUS libconfig++ REQUIRED)
-
-add_executable(sysnp main.cpp machine.cpp machine.h device.h)
+add_executable(sysnp main.cpp)
 target_link_libraries(sysnp PUBLIC config++ PRIVATE Threads::Threads)
-#target_link_libraries(sysnp PRIVATE Threads::Threads)
-add_subdirectory(nbus)
+find_package(Boost COMPONENTS unit_test_framework REQUIRED)
+add_executable(test)
+target_link_libraries(test PUBLIC config++ PRIVATE Threads::Threads Boost::unit_test_framework)
+
+add_subdirectory(machine)
+add_subdirectory(tests)

@@ -1,0 +1,13 @@
+target_sources(sysnp
+    PRIVATE
+        n16r.cpp
+        busunit.cpp
+        cache.cpp
+        n16r.h
+        cache.h
+)
+target_sources(test
+    PRIVATE
+        cache.cpp
+        cache.h
+)
