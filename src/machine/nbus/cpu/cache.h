@@ -5,6 +5,8 @@
 #include <set>
 #include <map>
 
+#include "busunit.h"
+
 namespace sysnp {
 
 namespace nbus {
@@ -22,6 +24,7 @@ class CacheLine {
         uint32_t getFlags();
 
         void load(uint32_t, uint32_t, uint32_t, std::vector<uint8_t>);
+        void write(uint32_t, uint32_t, std::vector<uint8_t>);
 
         void invalidate();
 
@@ -50,6 +53,7 @@ class CacheBin {
         void invalidate(uint32_t, uint32_t);
 
         void load(uint32_t, uint32_t, uint32_t, std::vector<uint8_t>);
+        void write(uint32_t, uint32_t, std::vector<uint8_t>);
     private:
         std::vector<CacheLine> ways;
 };
@@ -70,6 +74,7 @@ class Cache {
         void invalidate(uint32_t, uint32_t);
 
         void load(uint32_t, uint32_t, uint32_t, std::vector<uint8_t>);
+        void write(uint32_t, uint32_t, std::vector<uint8_t>);
 
         uint32_t getLineMask();
         int      getLineBytes();
@@ -90,6 +95,11 @@ enum CacheType {
     InstructionCache,
     DataCache,
     UnifiedL2Cache
+};
+
+enum CacheMode {
+    WriteThroughCache,
+    WriteBackCache
 };
 
 enum MemoryReadType {
@@ -118,12 +128,16 @@ struct MemoryOperation {
     bool isValid() { return bytes > 0; }
     bool isReady() { return bytes > 0 && committed; }
     void invalidate() { bytes = 0; committed = false; }
+
+    BusOperation asBusOperation();
 };
 
 class CacheController {
     public:
         void setCache(CacheType, int, int, int, int);
         void addNoCacheRegion(uint32_t, uint32_t);
+
+        //void setCacheMode(CacheMode);
 
         bool contains(CacheType, uint32_t, uint32_t);
         uint16_t read(CacheType, uint32_t, uint32_t);
@@ -141,6 +155,7 @@ class CacheController {
         std::vector<MemoryOperation> queuedOperations;
         MemoryOperation pendingOperation;
         std::map<CacheType, Cache> caches;
+        //CacheMode cacheMode;
 
         std::vector<std::pair<uint32_t, uint32_t>> noCacheRegions;
 
@@ -148,7 +163,6 @@ class CacheController {
 
         uint16_t isReadQueued(MemoryReadType, uint32_t, uint32_t);
 };
-
 
 }; // namespace n16r
 

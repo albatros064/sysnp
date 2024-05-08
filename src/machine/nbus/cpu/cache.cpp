@@ -43,6 +43,13 @@ void CacheLine::load(uint32_t _address, uint32_t _asid, uint32_t _flags, std::ve
     contents = _contents;
 }
 
+void CacheLine::write(uint32_t address, uint32_t asid, std::vector<uint8_t> data) {
+    uint32_t offset = address & lineMask;
+    for (int i = 0; i < data.size(); i++) {
+        contents[offset + i] = data[i];
+    }
+}
+
 CacheBin::CacheBin(int _addressWidth, int _tagWidth, int _lineBits, int _ways) {
     for (int w = 0; w < _ways; w++) {
         CacheLine way(_addressWidth, _tagWidth, _lineBits);
@@ -101,6 +108,15 @@ void CacheBin::load(uint32_t address, uint32_t asid, uint32_t flags, std::vector
         if (way.lru == 0) {
             way.load(address, asid, flags, contents);
             return;
+        }
+    }
+}
+
+void CacheBin::write(uint32_t address, uint32_t asid, std::vector<uint8_t> contents) {
+    for (CacheLine& way: ways) {
+        if (way.contains(address, asid)) {
+            way.write(address, asid, contents);
+            break;
         }
     }
 }
@@ -167,11 +183,43 @@ void Cache::load(uint32_t startAddress, uint32_t asid, uint32_t flags, std::vect
     bins[targetBin].load(startAddress, asid, flags, contents);
 }
 
+void Cache::write(uint32_t startAddress, uint32_t asid, std::vector<uint8_t> contents) {
+    int targetBin = (startAddress & binMask) >> lineBits;
+    bins[targetBin].write(startAddress, asid, contents);
+}
+
 uint32_t Cache::getLineMask() {
     return lineMask;
 }
 int Cache::getLineBytes() {
     return 1 << lineBits;
+}
+
+BusOperation MemoryOperation::asBusOperation() {
+    BusOperation op;
+    op.address = address;
+    op.isRead = type != MemoryOperationDataWrite;
+    op.bytes = bytes;
+
+    if (data.size() > 0) {
+        if (bytes == 1) {
+            if (address & 1) {
+                op.data.push_back(data[0] << 8);
+            }
+            else {
+                op.data.push_back(data[0]);
+            }
+        }
+        else {
+            for (int i = 0; i < data.size(); i += 2) {
+                uint16_t word = op.data[i];
+                word |= ((uint16_t) op.data[i + 1]) << 8;
+                op.data.push_back(word);
+            }
+        }
+    }
+
+    return op;
 }
 
 void CacheController::setCache(CacheType type, int _addressBits, int _binBits, int _lineBits, int _ways) {
@@ -239,9 +287,16 @@ uint16_t CacheController::queueOperation(MemoryOperation operation) {
     return operationId;
 }
 void CacheController::commitOperation(uint16_t operationId) {
-    for (auto op: queuedOperations) {
-        if (op.operationId == operationId) {
+    for (MemoryOperation& op: queuedOperations) {
+        if (op.operationId == operationId && op.isValid()) {
             op.committed = true;
+            if (op.type == MemoryOperationDataWrite) {
+                for (auto c: {InstructionCache, DataCache, UnifiedL2Cache}) {
+                    if (contains(c, op.address, op.asid)) {
+                        caches[c].write(op.address, op.asid, op.data);
+                    }
+                }
+            }
             break;
         }
     }

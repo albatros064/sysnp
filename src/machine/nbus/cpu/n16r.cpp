@@ -50,14 +50,14 @@ void N16R::clockUp() {
     memoryStage();
     writeBackStage();
 
-    // Execution buffer
-    machine->debug("Processing execution buffer");
-    //if ((!executionBuffer.isEmpty() && !executionBuffer.isFull()) || executionBuffer.hasRequest()) {
-        //busUnit.addLowPriorityRead(executionBuffer.getNextAddress());
-    //}
-
     // Bus interface
     machine->debug("Processing bus unit");
+
+    if (busUnit.isIdle()) {
+        if (cacheController.isOperationPrepared()) {
+            busUnit.queueOperation(cacheController.getOperation().asBusOperation());
+        }
+    }
     busUnit.clockUp();
 }
 
@@ -70,13 +70,16 @@ void N16R::clockDown() {
     machine->debug("Processing bus unit");
     busUnit.clockDown();
 
+    if (busUnit.hasData()) {
+        cacheController.ingestWord(busUnit.getWord());
+    }
+
     uint16_t pendingInterrupts = busUnit.hasInterrupt();
     pendingInterrupts <<= 8;
     pendingInterrupts &= registerFile[041];
     registerFile[040] = (registerFile[040] & 0xff) | pendingInterrupts;
 
     machine->debug("Processing execution buffer");
-    //executionBuffer.checkBus(busUnit);
 }
 
 void N16R::fetchStage() {
@@ -163,7 +166,6 @@ void N16R::decodeStage() {
         uint8_t func = instruction & 077;
 
         stage.executeCanOverflow = false;
-        stage.executeExtend = NoExtend;
         stage.commitOp = CommitWriteBack;
 
         bool isDouble = false;
@@ -308,8 +310,8 @@ void N16R::decodeStage() {
                 aReg += aRegBank;
                 bReg += bRegBank;
 
-                stage.srcRegs[1] = registerFile[aReg + 1];
-                stage.srcRegs[3] = registerFile[bReg + 1];
+                stage.regVals[1] = registerFile[aReg + 1];
+                stage.regVals[3] = registerFile[bReg + 1];
                 stage.srcRegs[1] = aReg + 1;
                 stage.srcRegs[3] = bReg + 1;
                 stage.dstRegs[1] = aReg + 1;
@@ -323,8 +325,8 @@ void N16R::decodeStage() {
                 bReg += bRegBank;
             }
 
-            stage.srcRegs[0] = registerFile[aReg];
-            stage.srcRegs[2] = registerFile[bReg];
+            stage.regVals[0] = registerFile[aReg];
+            stage.regVals[2] = registerFile[bReg];
             stage.srcRegs[0] = aReg;
             stage.srcRegs[2] = bReg;
             stage.dstRegs[0] = aReg;
@@ -353,16 +355,16 @@ void N16R::decodeStage() {
 
         uint8_t aReg = (instruction >> 9) & 0007;
         uint8_t func = (instruction >> 8) & 0001;
-        uint8_t imm  = instruction        & 0377;
+        uint8_t imm  =  instruction       & 0377;
 
         stage.memoryOp = MemoryNop;
         stage.commitOp = CommitWriteBack;
 
-        stage.executeExtend = ZeroExtend;
+        bool signExtend = false;
 
         stage.srcRegs[0] = aReg;
         stage.dstRegs[0] = aReg;
-        stage.srcRegs[2] = imm;
+        stage.regVals[2] = imm;
 
         switch (opcode) {
             case 001:
@@ -375,46 +377,46 @@ void N16R::decodeStage() {
                 stage.regVals[1] = registerFile[aReg + 1];
 
                 stage.executeOp = func ? ExecuteSubtract : ExecuteAdd;
-                stage.executeExtend = SignExtend;
                 break;
             case 010:
                 stage.executeOp = ExecuteAdd;
                 if (!func) {
-                    stage.executeExtend = SignExtend;
+                    signExtend = true;
                 }
                 break;
             case 011:
                 stage.executeOp = ExecuteSubtract;
                 if (!func) {
-                    stage.executeExtend = SignExtend;
+                    signExtend = true;
                 }
                 break;
-            case 012:
+            case 012: // lui, lli
                 stage.executeOp = func ? ExecuteLoadLowerImmediate : ExecuteLoadUpperImmediate;
                 break;
-            case 013:
+            case 013: // and, or
                 stage.executeOp = func ? ExecuteOr : ExecuteAnd;
                 break;
-            case 014:
-                if (func) {
-                    stage.executeOp = ExecuteLeftShift;
-                }
-                else {
-                    stage.executeOp = ExecuteXor;
-                    stage.executeExtend = ZeroExtend;
-                }
+            case 014: // xor, lsh
+                stage.executeOp = func ? ExecuteLeftShift : ExecuteXor;
                 break;
-            case 015:
+            case 015: // lsha, rsh
                 stage.executeOp = func ? ExecuteRightShift : ExecuteRightShiftArithmetic;
                 break;
-            case 016:
+            case 016: // slt
                 stage.executeOp = ExecuteSetLessThan;
+                if (!func) {
+                    signExtend = true;
+                }
                 break;
             default:
                 // This should be impossible to hit...
                 break;
         }
 
+        if (signExtend && (stage.regVals[2] & 0x0080)) {
+            stage.regVals[2] |= 0xff00;
+            stage.regVals[3]  = 0xffff;
+        }
         stage.regVals[0] = registerFile[stage.srcRegs[0]];
     }
     else if (opcode == 002 || opcode == 003) {
@@ -442,7 +444,9 @@ void N16R::decodeStage() {
         stage.srcRegs[1] = bReg + 1;
 
         stage.executeOp = ExecuteAdd;
-        stage.executeExtend = SignExtendWide;
+        if (stage.regVals[2] & 0x8000) {
+            stage.regVals[3] = 0xffff;
+        }
 
         switch (func) {
             case 0: // lb
@@ -457,11 +461,13 @@ void N16R::decodeStage() {
                 break;
             case 2: // sb
                 stage.memoryOp = MemoryWriteByte;
+                stage.commitOp = CommitWrite;
                 stage.regVals[4] = registerFile[aReg];
                 stage.srcRegs[2] = aReg;
                 break;
             case 3: // sw
                 stage.memoryOp = MemoryWriteWord;
+                stage.commitOp = CommitWrite;
                 stage.regVals[4] = registerFile[aReg];
                 stage.srcRegs[2] = aReg;
                 break;
@@ -555,10 +561,32 @@ void N16R::executeStage() {
     auto stage = stageRegisters[2];
 
     uint32_t temp;
+    uint32_t temp0;
 
     switch (stage.executeOp) {
         case ExecuteSetLessThan:
+        case ExecuteSubtract:
         case ExecuteAdd:
+            temp  = ((uint32_t) stage.regVals[0] << 16) | stage.regVals[1];
+
+            temp0 = ((uint32_t) stage.regVals[2] << 16) | stage.regVals[3];
+            if (stage.executeOp != ExecuteAdd) {
+                temp0 = ~temp0 + 1;
+            }
+            temp  = temp + temp0;
+
+            if (stage.executeOp == ExecuteSetLessThan) {
+                stage.regVals[0] = (temp & 0x80000000) ? 1 : 0;
+            }
+            else {
+                stage.regVals[0] = temp >> 16;
+                stage.regVals[1] = temp & 0xff;
+            }
+
+            if (stage.executeCanOverflow) {
+                //
+            }
+            
             break;
         case ExecuteAnd:
             stage.regVals[0] &= stage.regVals[2];
@@ -611,7 +639,49 @@ void N16R::memoryStage() {
     if (stageRegisters.size() < 4 || stageRegisters[3].bubble) {
         return;
     }
-    // everything is a nop for now
+
+    auto stage = stageRegisters[3];
+
+    uint32_t asid = ((uint32_t) registerFile[39] << 16) | registerFile[38];
+    uint32_t memoryAddress = ((uint32_t) stage.regVals[1] << 16) | stage.regVals[0];
+    uint32_t wordAddress = memoryAddress & 0xfffffffe;
+    uint16_t memoryValue = stage.regVals[4];
+
+    if (stage.memoryOp == MemoryReadByte || stage.memoryOp == MemoryReadWord) {
+        if (cacheController.contains(DataCache, wordAddress, asid)) {
+            memoryValue = cacheController.read(DataCache, wordAddress, asid);
+            if (stage.memoryOp == MemoryReadByte) {
+                if (memoryAddress & 1) {
+                    memoryValue >>= 8;
+                }
+                else {
+                    memoryValue &= 0xff;
+                }
+            }
+            stage.regVals[0] = memoryValue;
+            stage.delayed = false;
+        }
+        else {
+            cacheController.queueRead(DataRead, wordAddress, asid);
+            stage.delayed = true;
+        }
+    }
+    else {
+        MemoryOperation writeOp;
+        writeOp.address = memoryAddress;
+        writeOp.asid = asid;
+        writeOp.type = MemoryOperationDataWrite;
+
+        writeOp.data.push_back(stage.regVals[4] & 0xff);
+        writeOp.bytes = 1;
+        if (stage.memoryOp == MemoryWriteWord) {
+            writeOp.bytes++;
+            writeOp.data.push_back(stage.regVals[4] >> 8);
+        }
+        stage.regVals[1] = cacheController.queueOperation(writeOp);
+    }
+
+    stageRegisters[3] = stage;
 }
 void N16R::writeBackStage() {
     if (stageRegisters.size() < 5 || stageRegisters[4].bubble) {
@@ -631,6 +701,9 @@ void N16R::writeBackStage() {
             }
         }
     }
+    else if (stage.commitOp == CommitWrite) {
+        cacheController.commitOperation(stage.regVals[1]);
+    }
     else {
         auto checkValue = stage.regVals[0];
 
@@ -646,7 +719,6 @@ void N16R::writeBackStage() {
                 taken = !zero;
                 break;
             case CommitDecideGT:
-                taken = !zero;
                 taken = !zero && !negative;
                 break;
             case CommitDecideLE:
@@ -674,6 +746,9 @@ void N16R::writeBackStage() {
 void N16R::stageFlush(int until) {
     for (int i = 0; i < 5 && i < until; i++) {
         stageRegisters[i].invalidate();
+        if (i == 3 && stageRegisters[i].commitOp == CommitWrite) {
+            cacheController.invalidateOperation(stageRegisters[i].regVals[1]);
+        }
     }
 }
 

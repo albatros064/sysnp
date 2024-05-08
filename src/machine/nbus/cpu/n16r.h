@@ -3,6 +3,7 @@
 
 #include "../nbus.h"
 #include "cache.h"
+#include "busunit.h"
 #include <set>
 
 namespace sysnp {
@@ -10,16 +11,6 @@ namespace sysnp {
 namespace nbus {
 
 namespace n16r {
-
-enum BusPhase {
-    Idle,
-    LowRead,
-    LowReadWait,
-    HighRead,
-    HighReadWait,
-    Write,
-    WriteWait
-};
 
 enum ExceptionType {
     Interrupt           = 000,
@@ -68,6 +59,7 @@ enum CommitOp {
     CommitNop,
 
     CommitWriteBack,
+    CommitWrite,
 
     CommitDecideEQ,
     CommitDecideNE,
@@ -75,51 +67,6 @@ enum CommitOp {
     CommitDecideLE,
     CommitDecideLT,
     CommitDecideGE
-};
-
-enum ExtendFunction {
-    SignExtend, ZeroExtend, SignExtendWide, NoExtend
-};
-
-class BusUnit {
-    public:
-        void setBusInterface(std::shared_ptr<NBusInterface>);
-        void reset();
-        void clockUp();
-        void clockDown();
-
-        void addLowPriorityRead(uint32_t);
-        void addHighPriorityRead(uint32_t);
-        void addHighPriorityWrite(uint32_t, uint16_t, uint8_t);
-
-        bool isReadReady();
-        bool isHighReadPriority();
-        uint16_t getReadData();
-        uint32_t getReadAddress();
-
-        uint8_t hasInterrupt();
-
-    private:
-        std::shared_ptr<NBusInterface> interface;
-
-        BusPhase phase;
-
-        bool readReady;
-        bool readPriority;
-        uint16_t readData;
-        uint32_t readAddress;
-
-        uint32_t addressInFlight;
-
-        uint32_t lowPriorityAddress;
-        uint32_t highPriorityAddress;
-        uint16_t highPriorityData;
-        uint8_t writeMode;
-        bool hasLowPriority;
-        bool hasHighPriority;
-        bool hasHighPriorityWrite;
-
-        uint8_t interruptState;
 };
 
 class StageRegister {
@@ -141,7 +88,6 @@ class StageRegister {
         MemoryOp  memoryOp;
         CommitOp  commitOp;
 
-        ExtendFunction executeExtend;
         bool executeCanOverflow;
 
         bool flushOnCommit;

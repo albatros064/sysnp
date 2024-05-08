@@ -1,4 +1,4 @@
-#include "n16r.h"
+#include "busunit.h"
 #include <iostream>
 
 namespace sysnp {
@@ -11,131 +11,118 @@ void BusUnit::setBusInterface(std::shared_ptr<NBusInterface> interface) {
     this->interface = interface;
 }
 void BusUnit::reset() {
-    phase = BusPhase::Idle;
-    readReady = false;
-    readPriority = false;
-    hasLowPriority = false;
-    hasHighPriority = false;
-    hasHighPriorityWrite = false;
+    phase = BusPhase::BusIdle;
+    BusOperation op;
+    op.isValid = false;
+    currentOperation = op;
     interruptState = 0;
 }
 
 void BusUnit::clockUp() {
-    interface->deassert(NBusSignal::Address);
-    interface->deassert(NBusSignal::Data);
-    interface->deassert(NBusSignal::WriteEnable);
-    interface->deassert(NBusSignal::ReadEnable);
+    interface->deassertSignal(NBusSignal::Address);
+    interface->deassertSignal(NBusSignal::Data);
+    interface->deassertSignal(NBusSignal::WriteEnable);
+    interface->deassertSignal(NBusSignal::ReadEnable);
 
-    if (phase == BusPhase::Idle) {
-        if (hasHighPriority) {
-            interface->assert(NBusSignal::Address, highPriorityAddress);
-            if (hasHighPriorityWrite) {
-                interface->assert(NBusSignal::Data, highPriorityData);
-                interface->assert(NBusSignal::WriteEnable, writeMode);
-                phase = BusPhase::Write;
+    if (phase == BusPhase::BusIdle) {
+        if (currentOperation.isValid) {
+            bool upperByte = currentOperation.address & 1;
+            interface->assertSignal(NBusSignal::Address, currentOperation.address & 0xfffffe);
+
+            if (currentOperation.isRead) {
+                uint8_t readSignal = 0b01;
+                if (currentOperation.bytes > 2) {
+                    readSignal = 0b11;
+                }
+                interface->assertSignal(NBusSignal::ReadEnable, readSignal);
+
+                phase = BusPhase::BusRead;
             }
             else {
-                addressInFlight = highPriorityAddress;
-                interface->assert(NBusSignal::ReadEnable, 1);
-                phase = BusPhase::HighRead;
+                uint8_t writeMode = 0b11;
+                if (currentOperation.bytes == 1) {
+                    writeMode = upperByte ? 0b10 : 0b01;
+                }
+                interface->assertSignal(NBusSignal::WriteEnable, writeMode);
+                interface->assertSignal(NBusSignal::Data, currentOperation.data[0]);
+
+                phase = BusPhase::BusWrite;
             }
         }
-        else if (hasLowPriority) {
-            interface->assert(NBusSignal::Address, lowPriorityAddress);
-            interface->assert(NBusSignal::ReadEnable, 1);
-            addressInFlight = lowPriorityAddress;
-            phase = BusPhase::LowRead;
-        }
-        readReady = false;
     }
 }
 void BusUnit::clockDown() {
     uint8_t interrupts = 0;
-    if (interface->sense(NBusSignal::Interrupt0)) {
+    if (interface->senseSignal(NBusSignal::Interrupt0)) {
         interrupts |= 1 << 2;
     }
-    if (interface->sense(NBusSignal::Interrupt1)) {
+    if (interface->senseSignal(NBusSignal::Interrupt1)) {
         interrupts |= 1 << 3;
     }
-    if (interface->sense(NBusSignal::Interrupt2)) {
+    if (interface->senseSignal(NBusSignal::Interrupt2)) {
         interrupts |= 1 << 4;
     }
-    if (interface->sense(NBusSignal::Interrupt3)) {
+    if (interface->senseSignal(NBusSignal::Interrupt3)) {
         interrupts |= 1 << 5;
     }
     interruptState = interrupts;
 
+    bool notReady =             interface->senseSignal(NBusSignal::NotReady) > 0;
+    uint16_t data = (uint16_t) (interface->senseSignal(NBusSignal::Data    ) & 0xffff);
+
     switch (phase) {
-        case BusPhase::LowRead:
-        case BusPhase::HighRead:
-            if (phase == BusPhase::LowRead) {
-                phase = BusPhase::LowReadWait;
-                hasLowPriority = false;
-            }
-            else {
-                phase = BusPhase::HighReadWait;
-                hasHighPriority = false;
-            }
+        case BusPhase::BusRead:
+            phase = BusPhase::BusReadWait;
             break;
-        case BusPhase::LowReadWait:
-        case BusPhase::HighReadWait:
-            if (interface->sense(NBusSignal::NotReady)) {
+        case BusPhase::BusReadWait:
+            if (notReady) {
                 break;
             }
 
-            readAddress = addressInFlight;
-            readData = (uint16_t) (interface->sense(NBusSignal::Data) & 0xffff);
-            readReady = true;
-            readPriority = phase == BusPhase::HighReadWait;
-            phase = BusPhase::Idle;
-            break;
-        case BusPhase::Write:
-            phase = BusPhase::WriteWait;
-            hasHighPriority = false;
-            hasHighPriorityWrite = false;
-            break;
-        case BusPhase::WriteWait:
-            if (interface->sense(NBusSignal::NotReady)) {
-                break;
+            currentOperation.data.push_back(data);
+            currentOperation.bytes -= 2;
+            if (currentOperation.bytes <= 0) {
+                phase = BusPhase::BusIdle;
             }
 
-            phase = BusPhase::Idle;
             break;
-        case BusPhase::Idle:
+        case BusPhase::BusWrite:
+            phase = BusPhase::BusWriteWait;
+
+            break;
+        case BusPhase::BusWriteWait:
+            phase = BusPhase::BusIdle;
+
+            break;
+        case BusPhase::BusIdle:
         default:
             break;
     }
 }
 
-void BusUnit::addLowPriorityRead(uint32_t address) {
-    lowPriorityAddress = address;
-    hasLowPriority = true;
-}
-void BusUnit::addHighPriorityRead(uint32_t address) {
-    highPriorityAddress = address;
-    hasHighPriority = true;
-    hasHighPriorityWrite = false;
-}
-void BusUnit::addHighPriorityWrite(uint32_t address, uint16_t data, uint8_t activeBytes) {
-    highPriorityAddress = address;
-    highPriorityData = data;
-    hasHighPriority = true;
-    hasHighPriorityWrite = true;
-    writeMode = activeBytes;
+bool BusUnit::isIdle() {
+    return phase == BusPhase::BusIdle;
 }
 
-bool BusUnit::isReadReady() {
-    return readReady;
+bool BusUnit::hasData() {
+    return currentOperation.isRead && currentOperation.isValid && currentOperation.data.size() > 0;
 }
-bool BusUnit::isHighReadPriority() {
-    return readPriority;
+
+uint16_t BusUnit::getWord() {
+    uint16_t word = 0;
+    if (currentOperation.isValid && currentOperation.data.size() > 0) {
+        word = currentOperation.data[0];
+        currentOperation.data.erase(currentOperation.data.begin());
+
+        if (currentOperation.data.size() == 0 && currentOperation.bytes == 0) {
+            currentOperation.isValid = false;
+        }
+    }
+    return word;
 }
-uint16_t BusUnit::getReadData() {
-    readReady = false;
-    return readData;
-}
-uint32_t BusUnit::getReadAddress() {
-    return readAddress;
+
+void BusUnit::queueOperation(BusOperation operation) {
+    currentOperation = operation;
 }
 
 uint8_t BusUnit::hasInterrupt() {

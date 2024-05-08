@@ -1,4 +1,3 @@
-#define BOOST_TEST_MODULE Cache
 #include <boost/test/unit_test.hpp>
 #include "nbus/cpu/cache.h"
 
@@ -13,6 +12,8 @@ uint16_t altLineTestData[16] = {
     0x1032,0x5476,0x98ba,0xdcfe,0xefcd,0xab89,0x6745,0x2301,
     0x1032,0x5476,0x98ba,0xdcfe,0xefcd,0xab89,0x6745,0x2301
 };
+
+BOOST_AUTO_TEST_SUITE(Caches)
 
 BOOST_AUTO_TEST_CASE(cacheLine) {
     CacheLine line(32, 22, 5);
@@ -223,6 +224,10 @@ BOOST_AUTO_TEST_CASE(cacheController) {
     BOOST_CHECK(readId == 1);
     BOOST_CHECK(controller.isOperationPrepared());
 
+    auto readId2 = controller.queueRead(DataRead, 900, 45);
+    BOOST_CHECK(readId2 == 2);
+    BOOST_CHECK(controller.isOperationPrepared());
+
     auto op = controller.getOperation();
     BOOST_CHECK(op.operationId == readId);
     BOOST_CHECK(op.address == 32);
@@ -237,5 +242,36 @@ BOOST_AUTO_TEST_CASE(cacheController) {
     BOOST_CHECK( controller.contains(InstructionCache, 45, 45));
     BOOST_CHECK( controller.contains(InstructionCache, 32, 45));
     BOOST_CHECK(!controller.contains(InstructionCache, 64, 45));
+
+    auto op2 = controller.getOperation();
+    BOOST_CHECK(op2.operationId == readId2);
+    BOOST_CHECK(op2.address == 896);
+
+    for (int i = 0; i <16; i++) {
+        controller.ingestWord(altLineTestData[i]);
+    }
+
+    BOOST_CHECK( controller.contains(DataCache, 896, 45));
+    BOOST_CHECK( controller.contains(DataCache, 900, 45));
+    BOOST_CHECK(!controller.contains(DataCache, 894, 45));
+
+    
+    MemoryOperation writeOp;
+    writeOp.address = 899;
+    writeOp.asid = 45;
+    writeOp.type = MemoryOperationDataWrite;
+    writeOp.bytes = 1;
+    writeOp.data.push_back(99);
+    
+    auto writeId = controller.queueOperation(writeOp);
+    BOOST_CHECK(!controller.isOperationPrepared());
+    controller.commitOperation(writeId);
+    BOOST_CHECK( controller.isOperationPrepared());
+    auto word = controller.read(DataCache, 898, 45);
+    BOOST_CHECK( word == 0x5463);
+
+    auto op3 = controller.getOperation();
+    BOOST_CHECK(op3.operationId == writeId);
 }
 
+BOOST_AUTO_TEST_SUITE_END()

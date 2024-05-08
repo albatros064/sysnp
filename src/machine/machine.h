@@ -22,7 +22,7 @@ enum RunMode {
 
 class Machine : public std::enable_shared_from_this<Machine> {
   public:
-	Machine() {}
+	Machine() { debugLevel = 0; }
 	virtual ~Machine() {}
 
     bool load(std::string);

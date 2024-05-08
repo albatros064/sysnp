@@ -51,15 +51,20 @@ void Memory::clockUp() {
     machine->debug("Memory::clockUp()");
     if (status != MemoryStatus::Ready && status != MemoryStatus::Cleanup) {
         if (latency > 0) {
-            interface->assert(NBusSignal::NotReady, 1);
+            interface->assertSignal(NBusSignal::NotReady, 1);
             --latency;
         }
         else {
-            interface->deassert(NBusSignal::NotReady);
+            interface->deassertSignal(NBusSignal::NotReady);
             if (status == MemoryStatus::ReadLatency) {
-                uint16_t data = selectedModule->read(addressLatch);
-                data |= selectedModule->read(addressLatch + 1) << 8;
-                interface->assert(NBusSignal::Data, data);
+                uint16_t data = selectedModule->read(addressLatch++);
+                data |= selectedModule->read(addressLatch++) << 8;
+                interface->assertSignal(NBusSignal::Data, data);
+                readLatch--;
+
+                if (readLatch <= 0) {
+                    status = MemoryStatus::Cleanup;
+                }
             }
             else if (status == MemoryStatus::WriteLatency) {
                 if (writeLatch & 1) {
@@ -68,13 +73,13 @@ void Memory::clockUp() {
                 if (writeLatch & 2) {
                     selectedModule->write(addressLatch + 1, (dataLatch >> 8) & 0xff);
                 }
+                status = MemoryStatus::Cleanup;
             }
-            status = MemoryStatus::Cleanup;
         }
     }
     else if (status == MemoryStatus::Cleanup) {
-        interface->deassert(NBusSignal::Data);
-        interface->deassert(NBusSignal::NotReady);
+        interface->deassertSignal(NBusSignal::Data);
+        interface->deassertSignal(NBusSignal::NotReady);
 
         status = MemoryStatus::Ready;
     }
@@ -83,16 +88,16 @@ void Memory::clockUp() {
 void Memory::clockDown() {
     machine->debug("Memory::clockDown()");
 
-    uint32_t read  = interface->sense(NBusSignal::ReadEnable);
-    uint32_t write = interface->sense(NBusSignal::WriteEnable);
+    uint32_t read  = interface->senseSignal(NBusSignal::ReadEnable);
+    uint32_t write = interface->senseSignal(NBusSignal::WriteEnable);
 
     // Are we in a position to respond to bus activity?
     if (status == MemoryStatus::Ready) {
         machine->debug("Latching bus lines");
         if (read || write) {
             machine->debug("Read or write requested");
-            addressLatch = interface->sense(NBusSignal::Address) & 0xffffffffe;
-            dataLatch    = interface->sense(NBusSignal::Data   );
+            addressLatch = interface->senseSignal(NBusSignal::Address) & 0xffffffffe;
+            dataLatch    = interface->senseSignal(NBusSignal::Data   );
             readLatch = read;
             writeLatch = write;
 
@@ -108,11 +113,14 @@ void Memory::clockDown() {
                         machine->debug("Memory - handled by module " + module->getName());
                         selectedModule = module;
                         latency = 0;
-                        if (read) {
+                        if (readLatch) {
+                            if (readLatch > 1) {
+                                readLatch = 8; // batch read is 16 bytes
+                            }
                             status = MemoryStatus::ReadLatency;
                             latency = module->getReadLatency();
                         }
-                        else if (write) {
+                        else if (writeLatch) {
                             status = MemoryStatus::WriteLatency;
                             latency = module->getWriteLatency();
                         }

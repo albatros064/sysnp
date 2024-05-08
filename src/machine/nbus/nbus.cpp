@@ -17,14 +17,14 @@ NBusInterface::NBusInterface(std::shared_ptr<NBus> inBus, std::shared_ptr<Device
     }
 }
 
-void NBusInterface::assert(NBusSignal signal, uint32_t value) {
+void NBusInterface::assertSignal(NBusSignal signal, uint32_t value) {
     signals[signal] = value;
 }
-void NBusInterface::deassert(NBusSignal signal) {
-    assert(signal, 0);
+void NBusInterface::deassertSignal(NBusSignal signal) {
+    assertSignal(signal, 0);
 }
-uint32_t NBusInterface::sense(NBusSignal signal) {
-    return bus->sense(signal);
+uint32_t NBusInterface::senseSignal(NBusSignal signal) {
+    return bus->senseSignal(signal);
 }
 
 void NBusInterface::clockUp() {
@@ -38,7 +38,7 @@ NBus::NBus() {
     signalMasks[NBusSignal::Address] = 0xffffff;
     signalMasks[NBusSignal::Data] = 0xffff;
     signalMasks[NBusSignal::WriteEnable] = 0b11;
-    signalMasks[NBusSignal::ReadEnable ] = 1;
+    signalMasks[NBusSignal::ReadEnable ] = 0b11;
     signalMasks[NBusSignal::Interrupt0] = 1;
     signalMasks[NBusSignal::Interrupt1] = 1;
     signalMasks[NBusSignal::Interrupt2] = 1;
@@ -77,68 +77,68 @@ std::string NBus::command(std::stringstream &input) {
     std::stringstream stream;
 
     if (commandWord == "r" || commandWord == "release") {
-        selfInterface->deassert(NBusSignal::Address);
-        selfInterface->deassert(NBusSignal::Data);
-        selfInterface->deassert(NBusSignal::ReadEnable);
-        selfInterface->deassert(NBusSignal::WriteEnable);
-        selfInterface->deassert(NBusSignal::Interrupt0);
-        selfInterface->deassert(NBusSignal::Interrupt1);
-        selfInterface->deassert(NBusSignal::Interrupt2);
-        selfInterface->deassert(NBusSignal::Interrupt3);
-        selfInterface->deassert(NBusSignal::NotReady);
+        selfInterface->deassertSignal(NBusSignal::Address);
+        selfInterface->deassertSignal(NBusSignal::Data);
+        selfInterface->deassertSignal(NBusSignal::ReadEnable);
+        selfInterface->deassertSignal(NBusSignal::WriteEnable);
+        selfInterface->deassertSignal(NBusSignal::Interrupt0);
+        selfInterface->deassertSignal(NBusSignal::Interrupt1);
+        selfInterface->deassertSignal(NBusSignal::Interrupt2);
+        selfInterface->deassertSignal(NBusSignal::Interrupt3);
+        selfInterface->deassertSignal(NBusSignal::NotReady);
         stream << "Ok.";
     }
     else if (commandWord == "address") {
         input >> setValue;
         if (setValue != 0xffffffff) {
-            selfInterface->assert(NBusSignal::Address, setValue);
+            selfInterface->assertSignal(NBusSignal::Address, setValue);
             stream << "Ok.";
         }
         else {
             stream << "0" << std::setw(8) << std::setfill('0') << std::oct;
-            stream << selfInterface->sense(NBusSignal::Address);
+            stream << selfInterface->senseSignal(NBusSignal::Address);
         }
     }
     else if (commandWord == "data") {
         input >> setValue;
         if (setValue != 0xffffffff) {
-            selfInterface->assert(NBusSignal::Data, setValue);
+            selfInterface->assertSignal(NBusSignal::Data, setValue);
             stream << "Ok.";
         }
         else {
             stream << "0" << std::setw(6) << std::setfill('0') << std::oct;
-            stream << selfInterface->sense(NBusSignal::Data);
+            stream << selfInterface->senseSignal(NBusSignal::Data);
         }
     }
     else if (commandWord == "read") {
         input >> setValue;
         if (setValue != 0xffffffff) {
-            selfInterface->assert(NBusSignal::ReadEnable, setValue);
+            selfInterface->assertSignal(NBusSignal::ReadEnable, setValue);
             stream << "Ok.";
         }
         else {
-            stream << "0b" << std::bitset<2>(selfInterface->sense(NBusSignal::ReadEnable));
+            stream << "0b" << std::bitset<2>(selfInterface->senseSignal(NBusSignal::ReadEnable));
         }
     }
     else if (commandWord == "write") {
         input >> setValue;
         if (setValue != 0xffffffff) {
-            selfInterface->assert(NBusSignal::WriteEnable, setValue);
+            selfInterface->assertSignal(NBusSignal::WriteEnable, setValue);
             stream << "Ok.";
         }
         else {
-            stream << "0b" << std::bitset<2>(selfInterface->sense(NBusSignal::WriteEnable));
+            stream << "0b" << std::bitset<2>(selfInterface->senseSignal(NBusSignal::WriteEnable));
         }
     }
     else {
         stream << "ADDR---- DATA-- WR RD INT- H" << std::endl;
-        stream << "0x" << std::setfill('0') << std::setw(6) << std::hex << selfInterface->sense(NBusSignal::Address) << " ";
-        stream << "0x" << std::setfill('0') << std::setw(4) << std::hex << selfInterface->sense(NBusSignal::Data) << " " << std::setbase(10);
-        stream << std::bitset<2>(selfInterface->sense(NBusSignal::WriteEnable)) << " ";
-        stream << std::bitset<2>(selfInterface->sense(NBusSignal::ReadEnable )) << " ";
-        stream << selfInterface->sense(NBusSignal::Interrupt0) << selfInterface->sense(NBusSignal::Interrupt1);
-        stream << selfInterface->sense(NBusSignal::Interrupt2) << selfInterface->sense(NBusSignal::Interrupt3) << " ";
-        stream << selfInterface->sense(NBusSignal::NotReady);
+        stream << "0x" << std::setfill('0') << std::setw(6) << std::hex << selfInterface->senseSignal(NBusSignal::Address) << " ";
+        stream << "0x" << std::setfill('0') << std::setw(4) << std::hex << selfInterface->senseSignal(NBusSignal::Data) << " " << std::setbase(10);
+        stream << std::bitset<2>(selfInterface->senseSignal(NBusSignal::WriteEnable)) << " ";
+        stream << std::bitset<2>(selfInterface->senseSignal(NBusSignal::ReadEnable )) << " ";
+        stream << selfInterface->senseSignal(NBusSignal::Interrupt0) << selfInterface->senseSignal(NBusSignal::Interrupt1);
+        stream << selfInterface->senseSignal(NBusSignal::Interrupt2) << selfInterface->senseSignal(NBusSignal::Interrupt3) << " ";
+        stream << selfInterface->senseSignal(NBusSignal::NotReady);
     }
     return stream.str();
 }
@@ -147,7 +147,7 @@ std::shared_ptr<NBusInterface> NBus::getIndependentInterface() {
     return selfInterface;
 }
 
-uint32_t NBus::sense(NBusSignal signal) {
+uint32_t NBus::senseSignal(NBusSignal signal) {
     uint32_t signalValue = 0;
 
     for (auto interface: interfaces) {
