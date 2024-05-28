@@ -13,7 +13,10 @@ void N16R::init(const libconfig::Setting &setting) {
     setting.lookupValue("resetAddress", resetAddress);
     setting.lookupValue("pipelined", isPipelined);
 
-    const libconfig::Setting& cNoCache = setting["noCache"];
+    const libconfig::Setting& cCacheC = setting["cache"];
+    const libconfig::Setting& cCaches = cCacheC["caches"];
+    const libconfig::Setting& cNoCache = cCacheC["noCache"];
+
     int regionCount = cNoCache.getLength();
     for (int i = 0; i < regionCount; i++) {
         const libconfig::Setting& cRegion = cNoCache[i];
@@ -28,11 +31,28 @@ void N16R::init(const libconfig::Setting &setting) {
         }
     }
 
+    int cacheCount = cCaches.getLength();
+    for (int i = 0; i < cacheCount; i++) {
+        const libconfig::Setting& cCache = cCaches[i];
+        std::string type;
+        int binBits = 0;
+        int lineBits = 0;
+        int ways = 0;
+        cCache.lookupValue("type", type);
+        cCache.lookupValue("binBits", binBits);
+        cCache.lookupValue("lineBits", lineBits);
+        cCache.lookupValue("ways", ways);
+        cacheController.setCache(
+            type == "data" ? DataCache : InstructionCache,
+            32, // address bits
+            binBits,
+            lineBits,
+            ways
+        );
+    }
+
     registerFile[040] = 0;
     registerFile[041] = 0;
-
-    cacheController.setCache(InstructionCache, 32, 4, 5, 2);
-    cacheController.setCache(DataCache, 32, 4, 5, 2);
 }
 
 void N16R::postInit() {
@@ -78,12 +98,11 @@ void N16R::clockDown() {
     pendingInterrupts <<= 8;
     pendingInterrupts &= registerFile[041];
     registerFile[040] = (registerFile[040] & 0xff) | pendingInterrupts;
-
-    machine->debug("Processing execution buffer");
 }
 
 void N16R::fetchStage() {
-    if (stageRegisters.size() < 1 || stageRegisters[0].bubble) {
+    if (stageRegisters[0].bubble) {
+        machine->debug(7, "Fetch bubble.");
         return;
     }
 
@@ -91,38 +110,50 @@ void N16R::fetchStage() {
 
     uint32_t nextWord = stage.instructionPointer + 2;
 
-    if (stage.delayed) {
-        if (stage.instructionPointer != stage.nextInstructionPointer) {
-            if (cacheController.contains(InstructionCache, nextWord, 0)) {
-                stage.regVals[1] = cacheController.read(InstructionCache, nextWord, 0);
-                stage.delayed = false;
-            }
-            else {
-                cacheController.queueRead(InstructionRead, nextWord, 0);
-                stage.delayed = true;
-            }
-        }
-    }
-    else {
-        if (cacheController.contains(InstructionCache, stage.instructionPointer, 0)) {
-            stage.regVals[0] = cacheController.read(InstructionCache, stage.instructionPointer, 0);
+    if (stage.delayed && stage.instructionPointer != stage.nextInstructionPointer) {
+        machine->debug("Fetch pre-delayed");
+
+        if (cacheController.contains(InstructionCache, nextWord, 0)) {
+            stage.regVals[2] = cacheController.read(InstructionCache, nextWord, 0);
+            stage.regVals[1] = (stage.regVals[2] >> 8);
+            stage.regVals[1] |= (stage.regVals[2] & 0xff) << 8;
+            stage.word1 = stage.regVals[1];
             stage.delayed = false;
         }
         else {
-            cacheController.queueRead(InstructionRead, stage.instructionPointer, 0);
+            cacheController.queueRead(InstructionRead, nextWord, 0);
             stage.delayed = true;
         }
+    }
+    else if (cacheController.contains(InstructionCache, stage.instructionPointer, 0)) {
+        machine->debug("Fetch found");
+        stage.regVals[1] = cacheController.read(InstructionCache, stage.instructionPointer, 0);
+        stage.regVals[0] = (stage.regVals[1] >> 8);
+        stage.regVals[0] |= (stage.regVals[1] & 0xff) << 8;
+        stage.word0 = stage.regVals[0];
+        stage.delayed = false;
+    }
+    else if (!stage.delayed) {
+        machine->debug("Fetch queued");
+        cacheController.queueRead(InstructionRead, stage.instructionPointer, 0);
+        stage.delayed = true;
+    }
+    else {
+        machine->debug("Waiting for instruction data");
     }
 
     if (!stage.delayed) {
         // early-decode
-        uint8_t opcode = (stage.regVals[0] >> 12) & 0xf;
+        uint8_t opcode = (stage.word0 >> 12) & 0xf;
         if (opcode == 002 || opcode == 006 || opcode == 007 || opcode == 017) {
-            stage.nextInstructionPointer += 4;
+            stage.nextInstructionPointer = stage.instructionPointer + 4;
             stage.altInstructionPointer = stage.nextInstructionPointer;
 
             if (cacheController.contains(InstructionCache, nextWord, 0)) {
-                stage.regVals[1] = cacheController.read(InstructionCache, nextWord, 0);
+                stage.regVals[2] = cacheController.read(InstructionCache, nextWord, 0);
+                stage.regVals[1] = (stage.regVals[2] >> 8);
+                stage.regVals[1] |= (stage.regVals[2] & 0xff) << 8;
+                stage.word1 = stage.regVals[1];
             }
             else {
                 cacheController.queueRead(InstructionRead, nextWord, 0);
@@ -130,13 +161,13 @@ void N16R::fetchStage() {
             }
         }
         else {
-            stage.nextInstructionPointer += 2;
+            stage.nextInstructionPointer = stage.instructionPointer + 2;
             stage.altInstructionPointer = stage.nextInstructionPointer;
         }
 
         if (!stage.delayed && (opcode == 007 || opcode == 017)) {
-            uint32_t baseI = stage.regVals[0] & 0xfff;
-            uint32_t extrI = stage.regVals[1];
+            uint32_t baseI = stage.word0 & 0xfff;
+            uint32_t extrI = stage.word1;
             stage.nextInstructionPointer = stage.instructionPointer & 0xe0000000 | (baseI << 17) | (extrI << 1);
         }
     }
@@ -145,7 +176,12 @@ void N16R::fetchStage() {
 }
 
 void N16R::decodeStage() {
-    if (stageRegisters.size() < 2 || stageRegisters[1].bubble) {
+    if (stageRegisters[1].bubble) {
+        machine->debug(7, "Decode is bubble.");
+        return;
+    }
+    if (stageRegisters[1].exception) {
+        machine->debug(7, "Decode is exception.");
         return;
     }
 
@@ -153,7 +189,7 @@ void N16R::decodeStage() {
 
     stage.commitOp = CommitNop;
 
-    auto instruction = stage.regVals[0];
+    auto instruction = stage.word0;
     uint8_t opcode = (instruction >> 12) & 0xf;
 
     bool isPrivileged = false;
@@ -182,10 +218,12 @@ void N16R::decodeStage() {
             case 001: // mov.32 D->D
                 isDouble = true;
             case 000: // mov.16 D->D
+                stage.executeOp = ExecutePickB;
                 break;
             case 003: // xch.32 D<>D
                 isDouble = true;
             case 002: // xch.16 D<>D
+                stage.executeOp = ExecuteExchange;
                 isExchange = true;
                 break;
 
@@ -226,19 +264,23 @@ void N16R::decodeStage() {
                 break;
 
             case 030: // mov.16 S->D
+                stage.executeOp = ExecutePickB;
                 bRegBank = 040;
                 isPrivileged = true;
                 break;
             case 031: // mov.16 D->S
+                stage.executeOp = ExecutePickB;
                 aRegBank = 040;
                 isPrivileged = true;
                 break;
             case 032: // mov.32 S->D
+                stage.executeOp = ExecutePickB;
                 isDouble = true;
                 bRegBank = 040;
                 isPrivileged = true;
                 break;
             case 033: // mov.32 D->S
+                stage.executeOp = ExecutePickB;
                 isDouble = true;
                 aRegBank = 040;
                 isPrivileged = true;
@@ -247,16 +289,19 @@ void N16R::decodeStage() {
             case 042: // mov.32 A->D
                 isDouble = true;
             case 040: // mov.16 A->D
+                stage.executeOp = ExecutePickB;
                 bRegBank = 020;
                 break;
             case 043: // mov.32 D->A
                 isDouble = true;
             case 041: // mov.16 D->A
+                stage.executeOp = ExecutePickB;
                 aRegBank = 020;
                 break;
             case 045: // xch.32 D<>A
                 isDouble = true;
             case 044: // xch.16 D<>A
+                stage.executeOp = ExecuteExchange;
                 aRegBank = 020;
                 isExchange = true;
                 break;
@@ -350,7 +395,7 @@ void N16R::decodeStage() {
             stage.commitOp = CommitWriteBack;
         }
     }
-    else if (opcode == 001 || (opcode & 010 == 010)) { // 017 is covered by the earlier check
+    else if (opcode == 001 || ((opcode & 010) == 010)) { // 017 is covered by the earlier check
         // I
 
         uint8_t aReg = (instruction >> 9) & 0007;
@@ -529,6 +574,10 @@ void N16R::decodeStage() {
         stage.exception = true;
     }
 
+    if (stage.exception) {
+        stage.exceptionType = ExceptInvalidInstruction;
+    }
+
     stage.privileged = isPrivileged;
 
     stage.delayed = false;
@@ -553,8 +602,14 @@ void N16R::decodeStage() {
 
     stageRegisters[1] = stage;
 }
+
 void N16R::executeStage() {
-    if (stageRegisters.size() < 3 || stageRegisters[2].bubble) {
+    if (stageRegisters[2].bubble) {
+        machine->debug(7, "Execute is bubble.");
+        return;
+    }
+    if (stageRegisters[2].exception) {
+        machine->debug(7, "Execute is exception.");
         return;
     }
 
@@ -619,6 +674,10 @@ void N16R::executeStage() {
         case ExecuteRightShift:
             stage.regVals[0] >>= ((stage.regVals[2] & 0xf) + 1);
             break;
+        case ExecutePickB:
+            stage.regVals[0] = stage.regVals[2];
+            stage.regVals[1] = stage.regVals[3];
+            break;
         case ExecuteExchange:
             temp = stage.regVals[0];
             stage.regVals[0] = stage.regVals[2];
@@ -635,12 +694,22 @@ void N16R::executeStage() {
 
     stageRegisters[2] = stage;
 }
+
 void N16R::memoryStage() {
-    if (stageRegisters.size() < 4 || stageRegisters[3].bubble) {
+    if (stageRegisters[3].bubble) {
+        machine->debug(7, "Memory is bubble.");
+        return;
+    }
+    if (stageRegisters[3].exception) {
+        machine->debug(7, "Memory is exception.");
         return;
     }
 
     auto stage = stageRegisters[3];
+
+    if (stage.memoryOp == MemoryNop) {
+        return;
+    }
 
     uint32_t asid = ((uint32_t) registerFile[39] << 16) | registerFile[38];
     uint32_t memoryAddress = ((uint32_t) stage.regVals[1] << 16) | stage.regVals[0];
@@ -683,18 +752,64 @@ void N16R::memoryStage() {
 
     stageRegisters[3] = stage;
 }
+
 void N16R::writeBackStage() {
-    if (stageRegisters.size() < 5 || stageRegisters[4].bubble) {
+    if (stageRegisters[4].bubble) {
+        machine->debug(7, "Write back is bubble.");
         return;
     }
 
     auto stage = stageRegisters[4];
 
-    if (stage.commitOp == CommitNop) {
+    if (hasInterrupts()) {
+        stage.exception = true;
+        stage.exceptionType = ExceptInterrupt;
+    }
+    else if (stage.privileged && !isKernel()) {
+        stage.exception = true;
+        stage.exceptionType = ExceptReservedInstruction;
+    }
+
+    if (stage.exception) {
+        uint32_t ipc = registerFile[ipcRegister];
+        ipc |= (registerFile[ipcRegister + 1] << 16);
+        stage.nextInstructionPointer = ipc;
+        stageRegisters[4] = stage;
+
+        uint16_t cause  = registerFile[causeRegister ];
+        uint16_t status = registerFile[statusRegister];
+
+        cause  = (cause  & 0xff00) | (stage.exceptionType << 2);
+        status = (status & 0xff00) | ((status << 2) && 0x003c);
+
+        // store cause and status
+        registerFile[causeRegister ] = cause;
+        registerFile[statusRegister] = status;
+
+        // store bad virtual address (later)
+        //registerFile[bvaRegister    ] = stage.regVals[0];
+        //registerFile[bvaRegister + 1] = stage.regVals[1];
+
+        // store excepting instruction pointer
+        registerFile[epcRegister    ] = stage.instructionPointer & 0xffff;
+        registerFile[epcRegister + 1] = stage.instructionPointer >> 16;
+
+        stageFlush(3);
+        if (stage.commitOp == CommitWrite) {
+            cacheController.invalidateOperation(stage.regVals[1]);
+        }
         return;
     }
 
-    if (stage.commitOp == CommitWriteBack) {
+    if (stage.commitOp == CommitNop) {
+        return;
+    }
+    else if (stage.commitOp == CommitExceptionReturn) {
+        uint16_t status = registerFile[statusRegister];
+        status = (status & 0xff00) | ((status >> 2) && 0x003f);
+        registerFile[statusRegister] = status;
+    }
+    else if (stage.commitOp == CommitWriteBack) {
         for (int i = 0; i < 4; i++) {
             if (stage.dstRegs[i] != StageRegister::emptyRegister) {
                 registerFile[stage.dstRegs[i]] = stage.regVals[i];
@@ -735,8 +850,9 @@ void N16R::writeBackStage() {
                 break;
         }
 
+        stage.taken = taken;
+
         if (taken) {
-            stage.nextInstructionPointer = stage.altInstructionPointer;
             stageFlush(4);
         }
     }
@@ -746,7 +862,7 @@ void N16R::writeBackStage() {
 void N16R::stageFlush(int until) {
     for (int i = 0; i < 5 && i < until; i++) {
         stageRegisters[i].invalidate();
-        if (i == 3 && stageRegisters[i].commitOp == CommitWrite) {
+        if (i >= 3 && stageRegisters[i].commitOp == CommitWrite) {
             cacheController.invalidateOperation(stageRegisters[i].regVals[1]);
         }
     }
@@ -754,11 +870,10 @@ void N16R::stageFlush(int until) {
 
 void N16R::stageShift() {
     auto justRetired = stageRegisters.back();
-    if (stageRegisters.size() == 5) {
-        stageRegisters[4].invalidate();
-    }
 
-    for (int i = stageRegisters.size() - 2; i >= 0; i++) {
+    stageRegisters[4].invalidate();
+
+    for (int i = stageRegisters.size() - 2; i >= 0; i--) {
         // check if we can progress forward
         if (stageRegisters[i+1].bubble) {
             // and check if we're delayed
@@ -784,412 +899,28 @@ void N16R::stageShift() {
         }
     }
 
-    if (stageRegisters[0].bubble) {
+    if (stageRegisters[0].bubble || justRetired.exception) {
         StageRegister nextStart;
-        if (isPipelined) {
-            auto lastFetched = stageRegisters[1];
+        auto lastFetched = stageRegisters[1];
 
-            nextStart.instructionPointer = lastFetched.nextInstructionPointer;
-            nextStart.nextInstructionPointer = nextStart.instructionPointer;
-            nextStart.bubble = false;
-        }
-        else if (inFlight == 0) {
+        if (justRetired.exception || justRetired.taken) {
             nextStart.instructionPointer = justRetired.nextInstructionPointer;
-            nextStart.nextInstructionPointer = nextStart.instructionPointer;
-            nextStart.bubble = false;
         }
+        else {
+            nextStart.instructionPointer = lastFetched.nextInstructionPointer;
+        }
+        nextStart.nextInstructionPointer = nextStart.instructionPointer;
+        nextStart.bubble = false;
 
         stageRegisters[0] = nextStart;
     }
 }
 
-/*
-{
-
-    // Execution core
-    AluFunction aluFunction;
-
-    switch (executionPhase) {
-        case Fetch:
-            machine->debug(" -Fetch");
-            if (executionBuffer.hasAddress(instructionPointer)) {
-                machine->debug(" --Decoding");
-                uint16_t instructionWord = executionBuffer.popTo(instructionPointer);
-
-                auto result = decoder.decode(instructionWord, instructionPointer);
-                if (result > 1) {
-                    machine->debug(" --Proceeding to fetch additional");
-                    executionBuffer.addRequest(instructionPointer + 2);
-                    executionPhase = ExecutionPhase::FetchAdditional;
-                }
-                else if (result == 1) {
-                    machine->debug(" -Reserved on decode " + std::to_string(decoder.function));
-                    pendingException = ExceptionType::ReservedInstruction;
-                    executionPhase = ExecutionPhase::Exception;
-                }
-                else {
-                    machine->debug(" --Proceeding to execute");
-                    executionPhase = ExecutionPhase::Execute;
-                }
-            }
-            else {
-                machine->debug(" --Requesting");
-                executionBuffer.addRequest(instructionPointer);
-            }
-
-            break;
-        case FetchAdditional:
-            machine->debug(" -FetchAdditional");
-            if (executionBuffer.hasAddress(instructionPointer + 2)) {
-                decoder.extraI = executionBuffer.popTo(instructionPointer + 2);
-                executionPhase = ExecutionPhase::Execute;
-            }
-            break;
-        case Execute:
-            machine->debug(" -Execute");
-            aluFunction = decoder.aluFunction;
-            if (aluFunction != AluFunction::NoFunction) {
-                machine->debug(" -- alu?");
-                if (decoder.format == InstructionFormat::I) {
-                    alu.load(registerFile[decoder.dReg], decoder.baseI);
-                }
-                else {
-                    alu.load(registerFile[decoder.dReg], registerFile[decoder.sReg]);
-                }
-
-                uint16_t result = alu.calculate(aluFunction, decoder.extend, false);
-                if (decoder.format != InstructionFormat::B) {
-                    registerFile[decoder.dReg] = result;
-                }
-            }
-            else if (decoder.format == InstructionFormat::R) {
-                machine->debug(" -- R instruction");
-                uint16_t tmp;
-                switch (decoder.function) {
-                    case 000: // mov r16->r16
-                    case 001: // mov r32->r32
-                        registerFile[decoder.dReg] = registerFile[decoder.sReg];
-                        break;
-                    case 002: // xch r16<>r16
-                    case 003: // xch r32<>r32
-                        tmp = registerFile[decoder.dReg];
-                        registerFile[decoder.dReg] = registerFile[decoder.sReg];
-                        registerFile[decoder.sReg] = tmp;
-                        break;
-                    case 040: // mov a16->r16
-                    case 042: // mov a32->r32
-                        registerFile[decoder.dReg] = altRegisterFile[decoder.sReg];
-                        break;
-                    case 041: // mov r16->a16
-                    case 043: // mov r32->a32
-                        altRegisterFile[decoder.dReg] = registerFile[decoder.sReg];
-                        break;
-                    case 044: // xch r16<>a16
-                    case 045: // xch r32<>a32
-                        tmp = registerFile[decoder.dReg];
-                        registerFile[decoder.dReg] = altRegisterFile[decoder.sReg];
-                        altRegisterFile[decoder.sReg] = tmp;
-                        break;
-                    case 030: // mov s16->r16
-                    case 032: // mov s32->r32
-                        if (!isKernel()) {
-                            pendingException = ExceptionType::ReservedInstruction;
-                            break;
-                        }
-                        registerFile[decoder.dReg] = sysRegisterFile[decoder.sReg];
-                        break;
-                    case 031: // mov r16->s16
-                    case 033: // mov r32->s32
-                        if (!isKernel()) {
-                            pendingException = ExceptionType::ReservedInstruction;
-                            break;
-                        }
-                        sysRegisterFile[decoder.dReg] = registerFile[decoder.sReg];
-                        break;
-                    case 050: // syscall
-                        pendingException = ExceptionType::Syscall;
-                        break;
-                    case 051: // eret
-                    case 052: // eret r32
-                    case 053: // eret a32
-                        if (!isKernel()) {
-                            pendingException = ExceptionType::ReservedInstruction;
-                            break;
-                        }
-                        // shift the kernel state stack
-                        tmp = sysRegisterFile[1] & 0xfff0 | ((sysRegisterFile[1] >> 2) & 0xf);
-                        sysRegisterFile[1] = tmp;
-                        break;
-                    case 070: // jr r32
-                    case 071: // jr a32
-                    case 072: // jalr
-                        // avoid throwing an invalid instruction exception
-                        break;
-                    default:
-                        // Invalid instruction
-                        pendingException = ExceptionType::InvalidInstruction;
-                        machine->debug(" -Invalid Instruction " + std::to_string(decoder.function));
-                        break;
-                }
-            }
-            else if (decoder.format == InstructionFormat::M) {
-                machine->debug(" --M instruction");
-                addressCalculator.loadLow(registerFile[decoder.sReg << 1], decoder.extraI);
-            }
-            else if (decoder.format == InstructionFormat::E) {
-                machine->debug(" --E instruction");
-
-                addressCalculator.loadLow(registerFile[decoder.sReg << 1], registerFile[decoder.rReg]);
-            }
-
-            if (decoder.isDouble || decoder.format == InstructionFormat::B) {
-                executionPhase = ExecutionPhase::ExecuteAdditional;
-            }
-            else if (decoder.format == InstructionFormat::M || decoder.format == InstructionFormat::E) {
-                executionPhase = ExecutionPhase::ExecuteAdditional;
-            }
-            else {
-                executionPhase = ExecutionPhase::Commit;
-            }
-
-            if (pendingException != ExceptionType::ExceptionNone) {
-                machine->debug(" -Going to Exception");
-                executionPhase = ExecutionPhase::Exception;
-            }
-
-            break;
-        case ExecuteAdditional:
-            machine->debug(" -ExecuteAdditional");
-            if (decoder.format == InstructionFormat::M || decoder.format == InstructionFormat::E) {
-                addressCalculator.loadHigh(registerFile[(decoder.sReg << 1) + 1]);
-                uint32_t memoryAddress = addressCalculator.calculate();
-
-                // b0x : read
-                // b1x : write
-                if (decoder.function & 2) {
-                    uint16_t writeData = registerFile[decoder.dReg];
-                    uint8_t activeBytes = 0b11;
-                    // bx0 : byte
-                    // bx1 : word
-                    if (!(decoder.function & 1)) {
-                        if (memoryAddress & 1) {
-                            activeBytes = 0b10;
-                            writeData = writeData << 8;
-                        }
-                        else {
-                            activeBytes = 0b01;
-                            writeData = writeData & 0x00ff;
-                        }
-                    }
-                    busUnit.addHighPriorityWrite(memoryAddress, writeData, activeBytes);
-                }
-                else {
-                    machine->debug(" --adding read");
-                    busUnit.addHighPriorityRead(memoryAddress);
-                }
-            }
-            else if (decoder.format == InstructionFormat::B) {
-                // we emulate an extra cycle for decision time....
-                machine->debug(" --branch decision cycle");
-            }
-            else {
-                aluFunction = decoder.aluFunction;
-                if (aluFunction != AluFunction::NoFunction) {
-                    ExtendFunction extend = ExtendFunction::NoExtend;
-                    if (decoder.format == InstructionFormat::I) {
-                        extend = ExtendFunction::SignAdditional;
-                        alu.load(registerFile[decoder.dReg + 1], decoder.baseI);
-                    }
-                    else {
-                        alu.load(registerFile[decoder.dReg + 1], registerFile[decoder.sReg + 1]);
-                    }
-
-                    registerFile[decoder.dReg + 1] = alu.calculate(aluFunction, extend, false);
-                }
-                else if (decoder.format == InstructionFormat::R) {
-                    uint16_t tmp;
-                    switch (decoder.function) {
-                        case 001: // mov r32->r32
-                            registerFile[decoder.dReg + 1] = registerFile[decoder.sReg + 1];
-                            break;
-                        case 003: // xch r32<>r32
-                            tmp = registerFile[decoder.dReg + 1];
-                            registerFile[decoder.dReg + 1] = registerFile[decoder.sReg + 1];
-                            registerFile[decoder.sReg + 1] = tmp;
-                            break;
-                        case 032: // mov s32->r32
-                            registerFile[decoder.dReg + 1] = sysRegisterFile[decoder.sReg + 1];
-                            break;
-                        case 033: // mov r32->s32
-                            sysRegisterFile[decoder.dReg + 1] = registerFile[decoder.sReg + 1];
-                            break;
-                        case 042: // mov a32->r32
-                            registerFile[decoder.dReg + 1] = altRegisterFile[decoder.sReg + 1];
-                            break;
-                        case 043: // mov r32->a32
-                            altRegisterFile[decoder.dReg + 1] = registerFile[decoder.sReg + 1];
-                            break;
-                        case 045: // xch r32<>r32
-                            tmp = registerFile[decoder.dReg + 1];
-                            registerFile[decoder.dReg + 1] = altRegisterFile[decoder.sReg + 1];
-                            altRegisterFile[decoder.sReg + 1] = tmp;
-                            break;
-                        default:
-                            break;
-                    }
-                }
-            }
-            executionPhase = ExecutionPhase::Commit;
-            break;
-        case Commit:
-            machine->debug(" -Commit");
-            if (decoder.format == InstructionFormat::M || decoder.format == InstructionFormat::E) {
-                // b0x : read
-                // b1x : write
-                if (!(decoder.function & 2)) {
-                    if (!busUnit.isReadReady() || !busUnit.isHighReadPriority()) {
-                        machine->debug(" --Waiting for read");
-                        break;
-                    }
-                    uint16_t readData = busUnit.getReadData();
-                    // bx0 : byte
-                    // bx1 : word
-                    if (!(decoder.function & 1)) {
-                        if (addressCalculator.calculate() & 1) {
-                            readData = readData >> 8;
-                        }
-                        else {
-                            readData = readData & 0x00ff;
-                        }
-                    }
-                    registerFile[decoder.dReg] = readData;
-                }
-
-                instructionPointer = decoder.nextAddress;
-                executionPhase = ExecutionPhase::Fetch;
-            }
-            else if (decoder.format == InstructionFormat::J) {
-                // handle jal
-                if (decoder.opcode == 7) {
-                    registerFile[14] = ( decoder.nextAddress        & 0xffff);
-                    registerFile[15] = ((decoder.nextAddress >> 16) & 0xffff);
-                }
-
-                instructionPointer =
-                    (instructionPointer & 0xc0000000) |
-                    (((uint32_t) decoder.baseI ) << 17) |
-                    (((uint32_t) decoder.extraI) <<  1);
-                executionPhase = ExecutionPhase::Fetch;
-            }
-            else if (decoder.format == InstructionFormat::R && (decoder.function == 052 || decoder.function == 053)) {
-                // start with a simple eret d.32
-                uint16_t rl = registerFile[ decoder.dReg << 1     ];
-                uint16_t rh = registerFile[(decoder.dReg << 1) + 1];
-
-                // oops, no it's an eret a.32
-                if (decoder.function == 053) {
-                    rl = altRegisterFile[ decoder.dReg << 1     ];
-                    rh = altRegisterFile[(decoder.dReg << 1) + 1];
-                }
-
-                instructionPointer = ((uint32_t) rh) << 16 | rl;
-                executionPhase = ExecutionPhase::Fetch;
-            }
-            else if (decoder.format == InstructionFormat::R && (decoder.function == 070 || decoder.function == 071 || decoder.function == 072)) {
-                // start with a simple jr d.32
-                uint16_t rl = registerFile[ decoder.dReg << 1     ];
-                uint16_t rh = registerFile[(decoder.dReg << 1) + 1];
-
-                // oops, no it's a jr a.32
-                if (decoder.function == 071) {
-                    rl = altRegisterFile[ decoder.dReg << 1     ];
-                    rh = altRegisterFile[(decoder.dReg << 1) + 1];
-                }
-
-                // just kidding, we're jalr d.32
-                if (decoder.function == 072) {
-                    // store the link pointer
-                    registerFile[14] = ( decoder.nextAddress        & 0xffff);
-                    registerFile[15] = ((decoder.nextAddress >> 16) & 0xffff);
-                }
-
-                instructionPointer = ((uint32_t) rh) << 16 | rl;
-                executionPhase = ExecutionPhase::Fetch;
-            }
-            else {
-                if (decoder.format == InstructionFormat::B && alu.branchTaken(decoder.branchFunction)) {
-                    machine->debug(" --branch taken");
-                    uint32_t branchOffset = decoder.extraI;
-                    if (branchOffset & 0x00008000) {
-                        branchOffset |= 0xffff0000;
-                    }
-                    branchOffset <<= 1;
-                    decoder.nextAddress += branchOffset - 4;
-                }
-
-                if ((decoder.nextAddress & 0xffff0000) == (instructionPointer & 0xffff0000)) {
-                    executionPhase = ExecutionPhase::Fetch;
-                    instructionPointer = decoder.nextAddress;
-                }
-                else {
-                    // We're simulating an extra cycle for the address carry.
-                    executionPhase = ExecutionPhase::CommitAdditional;
-                }
-            }
-            break;
-        case CommitAdditional:
-            machine->debug(" -CommitAdditional");
-            // We're simulating an extra cycle for the address carry.
-            instructionPointer = decoder.nextAddress;
-            executionPhase = ExecutionPhase::Fetch;
-            break;
-        case Exception:
-            machine->debug(" -Exception of type " + std::to_string(pendingException));
-            // set exception code
-            sysRegisterFile[0 ] = sysRegisterFile[0] & 0xff00 | (pendingException << 2);
-            // set execution state to 0,0 (kernel mode, exceptions disabled)
-            sysRegisterFile[1 ] = sysRegisterFile[1] & 0xffc0 | (sysRegisterFile[1] & 0xf) << 2;
-            // epc
-            sysRegisterFile[14] = (uint16_t) (instructionPointer & 0xffff);
-            sysRegisterFile[15] = (uint16_t) (instructionPointer >> 16);
-
-            pendingException = ExceptionType::ExceptionNone;
-
-            // jump to the exception handler (register $65)
-            instructionPointer = ((uint32_t) sysRegisterFile[11]) << 16 | sysRegisterFile[10];
-
-            executionPhase = ExecutionPhase::Fetch;
-            break;
-        default:
-            break;
-    }
-
-    // are interrupts enabled and not suppressed?
-    if (sysRegisterFile[1] & 1) {
-        // are we at the end of an instruction?
-        if (executionPhase == ExecutionPhase::Fetch || executionPhase == ExecutionPhase::Exception) {
-            // do we have pending interrupts?
-            if (sysRegisterFile[0] & 0xff00) {
-                executionPhase = ExecutionPhase::Exception;
-                pendingException = ExceptionType::Interrupt;
-            }
-        }
-    }
-
-    // Execution buffer
-    machine->debug("Processing execution buffer");
-    if ((!executionBuffer.isEmpty() && !executionBuffer.isFull()) || executionBuffer.hasRequest()) {
-        busUnit.addLowPriorityRead(executionBuffer.getNextAddress());
-    }
-
-    // Bus interface
-    machine->debug("Processing bus unit");
-    busUnit.clockUp();
-}
-*/
-
 bool N16R::isKernel() {
-    return (registerFile[041] & 0x2) == 0;
+    return (registerFile[statusRegister] & 0x2) == 0;
+}
+bool N16R::hasInterrupts() {
+    return (registerFile[causeRegister] & 0xff00) > 0;
 }
 
 std::string N16R::command(std::stringstream &input) {
@@ -1200,7 +931,6 @@ std::string N16R::command(std::stringstream &input) {
 
     if (commandWord == "reset") {
         reset();
-        response << "Ok.";
     }
     else if (commandWord == "status") {
         response << "MReg           AReg           SReg" << std::endl;
@@ -1225,12 +955,37 @@ std::string N16R::command(std::stringstream &input) {
             response << "6" << i << ": " << std::setw(8) << std::setfill('0') << std::hex << r;
             response << std::endl;
         }
-        //executionBuffer.output(response);
-        response << "Ok.";
     }
-    else {
-        response << "Ok.";
+    else if (commandWord == "pipeline") {
+        response << "IP         NXIP       ALIP       PDBE   INST EXTR  XMC  0    1    2    3    4    5" << std::endl;
+        for (auto iter = stageRegisters.cbegin(); iter != stageRegisters.cend(); iter++) {
+            response << std::setw(8) << std::setfill('0') << std::hex << iter->instructionPointer << "   ";
+            response << std::setw(8) << std::setfill('0') << std::hex << iter->nextInstructionPointer << "   ";
+            response << std::setw(8) << std::setfill('0') << std::hex << iter->altInstructionPointer << "   ";
+            response << (iter->privileged ? '1' : '0') << (iter->delayed   ? '1' : '0');
+            response << (iter->bubble     ? '1' : '0') << (iter->exception ? '1' : '0') << "   ";
+            response << std::setw(4) << std::setfill('0') << std::hex << iter->word0 << " ";
+            response << std::setw(4) << std::setfill('0') << std::hex << iter->word1 << "  ";
+
+            response << iter->executeOp << iter->memoryOp << iter->commitOp << " ";
+
+            for (int i = 0; i < 6; i++) {
+                response << " " << std::setw(4) << std::setfill('0') << std::hex << iter->regVals[i];
+            }
+            response << " ";
+            for (int i = 0; i < 6; i++) {
+                response << " " << std::setw(2) << std::setfill('0') << std::hex << (int) iter->srcRegs[i];
+            }
+            response << " ";
+            for (int i = 0; i < 4; i++) {
+                response << " " << std::setw(2) << std::setfill('0') << std::hex << (int) iter->dstRegs[i];
+            }
+            response << std::endl;
+        }
     }
+
+    response << "Ok.";
+
     return response.str();
 }
 
@@ -1241,7 +996,13 @@ void N16R::reset() {
     resetVector.bubble = false;
 
     stageRegisters.clear();
-    stageRegisters.insert(stageRegisters.begin(), resetVector);
+    stageRegisters.push_back(resetVector);
+
+    for (int i = 0; i < 4; i++) {
+        StageRegister bubble;
+        bubble.bubble = true;
+        stageRegisters.push_back(bubble);
+    }
 
     registerFile[041] = 0;
     //executionBuffer.reset();

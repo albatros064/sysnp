@@ -211,10 +211,18 @@ void Machine::run() {
                     }
                 }
             }
+            else if (command == "d") {
+                auto device = getDevice("n16r");
+                std::stringstream a("status");
+                std::stringstream b("pipeline");
+                std::cout << device->command(a) << std::endl;
+                std::cout << device->command(b) << std::endl;
+            }
         }
         else if (runMode == RunMode::FreeRunMode) {
             if (command == "p" || command == "pause") {
                 stopRunning();
+                runCycles = 0;
                 runMode = RunMode::SteppingMode;
             }
         }
@@ -246,9 +254,14 @@ void Machine::stopRunning() {
     }
 
     auto diff = std::chrono::nanoseconds(runEnd - runStart).count();
+
+    if (runCycles <= 0) {
+        return;
+    }
+
     std::cout << "ticks: " << runCycles << std::endl;
     std::cout << "ns:    " << diff << std::endl;
-    std::cout << "       " << (runCycles / ((double) diff / 1000000000)) << "Hz" << std::endl;
+    std::cout << "       " << (runCycles / ((double) diff / 1000000)) << "kHz" << std::endl;
 }
 
 void machineRun(Machine& machine, int clockRate) {

@@ -13,21 +13,20 @@ namespace nbus {
 namespace n16r {
 
 enum ExceptionType {
-    Interrupt           = 000,
+    ExceptInterrupt           = 000,
     // Vmem
     // Vmem
     // Vmem
-    IllegalLoad         = 004,
-    IllegalStore,
-    IBus,
-    DBus,
-    Syscall,
-    Breakpoint,
-    ReservedInstruction,
-    InvalidInstruction,
-    Overflow,
-    ExceptionNone       = 076,
-    ExceptionInhibit
+    ExceptIllegalLoad         = 004,
+    ExceptIllegalStore,
+    ExceptIBus,
+    ExceptDBus,
+    ExceptSyscall,
+    ExceptBreakpoint,
+    ExceptReservedInstruction,
+    ExceptInvalidInstruction,
+    ExceptOverflow,
+    ExceptNone                = 077
 };
 
 enum ExecuteOp {
@@ -45,7 +44,8 @@ enum ExecuteOp {
     ExecuteLeftShift,
     ExecuteRightShift,
     ExecuteRightShiftArithmetic,
-    ExecuteExchange
+    ExecuteExchange,
+    ExecutePickB
 };
 enum MemoryOp {
     MemoryNop,
@@ -66,7 +66,9 @@ enum CommitOp {
     CommitDecideGT,
     CommitDecideLE,
     CommitDecideLT,
-    CommitDecideGE
+    CommitDecideGE,
+
+    CommitExceptionReturn
 };
 
 class StageRegister {
@@ -79,6 +81,9 @@ class StageRegister {
         uint32_t instructionPointer;
         uint32_t nextInstructionPointer;
         uint32_t altInstructionPointer;
+
+        uint16_t word0;
+        uint16_t word1;
 
         uint16_t regVals[6];
         uint8_t  srcRegs[6];
@@ -95,7 +100,9 @@ class StageRegister {
         bool privileged;
         bool delayed;
         bool bubble;
+        bool taken;
         bool exception;
+        ExceptionType exceptionType;
 
         const static uint8_t emptyRegister = 255;
 };
@@ -113,6 +120,12 @@ class N16R : public NBusDevice {
         virtual std::string command(std::stringstream&);
     private:
         uint16_t registerFile[48];
+
+        const static uint8_t causeRegister = 32;
+        const static uint8_t statusRegister = 33;
+        const static uint8_t ipcRegister = 42;
+        const static uint8_t bvaRegister = 44;
+        const static uint8_t epcRegister = 46;
 
         std::vector<StageRegister> stageRegisters;
         std::set<uint8_t> registerHazards;
@@ -134,6 +147,7 @@ class N16R : public NBusDevice {
         bool isPipelined;
 
         bool isKernel();
+        bool hasInterrupts();
 
         void reset();
 };

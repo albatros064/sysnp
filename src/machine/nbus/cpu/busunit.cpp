@@ -114,7 +114,7 @@ uint16_t BusUnit::getWord() {
         word = currentOperation.data[0];
         currentOperation.data.erase(currentOperation.data.begin());
 
-        if (currentOperation.data.size() == 0 && currentOperation.bytes == 0) {
+        if (currentOperation.data.size() <= 0 && currentOperation.bytes <= 0) {
             currentOperation.isValid = false;
         }
     }

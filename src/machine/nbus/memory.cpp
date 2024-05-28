@@ -62,6 +62,8 @@ void Memory::clockUp() {
                 interface->assertSignal(NBusSignal::Data, data);
                 readLatch--;
 
+                machine->debug("Memory - " + std::to_string(readLatch) + " remain");
+
                 if (readLatch <= 0) {
                     status = MemoryStatus::Cleanup;
                 }
@@ -116,6 +118,10 @@ void Memory::clockDown() {
                         if (readLatch) {
                             if (readLatch > 1) {
                                 readLatch = 8; // batch read is 16 bytes
+                                machine->debug("Memory - burst read");
+                            }
+                            else {
+                                machine->debug("Memory - single read");
                             }
                             status = MemoryStatus::ReadLatency;
                             latency = module->getReadLatency();
