@@ -59,16 +59,19 @@ void N16R::postInit() {
     machine->debug("N16R::postInit()");
     busUnit.setBusInterface(interface);
     reset();
+
+    lastBreakpoint = 0;
+    breakpointWasHit = false;
 }
 
 void N16R::clockUp() {
     machine->debug("N16R::clockUp()");
 
-    fetchStage();
-    decodeStage();
-    executeStage();
-    memoryStage();
     writeBackStage();
+    memoryStage();
+    executeStage();
+    decodeStage();
+    fetchStage();
 
     // Bus interface
     machine->debug("Processing bus unit");
@@ -86,6 +89,7 @@ void N16R::clockDown() {
 
     machine->debug("Shifting stages");
     stageShift();
+    stageClearOut();
 
     machine->debug("Processing bus unit");
     busUnit.clockDown();
@@ -107,6 +111,20 @@ void N16R::fetchStage() {
     }
 
     StageRegister stage = stageRegisters[0];
+
+    if (breakpoints.contains(stage.instructionPointer)) {
+        if (stage.instructionPointer != lastBreakpoint) {
+            lastBreakpoint = stage.instructionPointer;
+            breakpointWasHit = true;
+        }
+        else {
+            breakpointWasHit = false;
+        }
+    }
+    else {
+        lastBreakpoint = 0;
+        breakpointWasHit = false;
+    }
 
     uint32_t nextWord = stage.instructionPointer + 2;
 
@@ -203,6 +221,8 @@ void N16R::decodeStage() {
 
         stage.executeCanOverflow = false;
         stage.commitOp = CommitWriteBack;
+
+        stage.exceptionType = ExceptNone;
 
         bool isDouble = false;
         bool isCustom = false;
@@ -307,11 +327,22 @@ void N16R::decodeStage() {
                 break;
 
             case 050: // syscall
+                stage.commitOp = CommitSyscall;
                 break;
             case 051: // eret
-            case 052: // eret D
-            case 053: // eret A
+                stage.commitOp = CommitExceptionReturn;
                 isPrivileged = true;
+                break;
+            case 052: // eret D
+                stage.commitOp = CommitExceptionReturnJump;
+                isPrivileged = true;
+                isDouble = true;
+                break;
+            case 053: // eret A
+                stage.commitOp = CommitExceptionReturnJump;
+                aRegBank = 020;
+                isPrivileged = true;
+                isDouble = true;
                 break;
             case 072: // jalr D
             case 073: // jalr A
@@ -322,7 +353,7 @@ void N16R::decodeStage() {
             case 070: // jr D
             case 071: // jr A
                 if (func == 070 || func == 071) {
-                    stage.commitOp = CommitNop;
+                    stage.commitOp = CommitJump;
                 }
 
                 aReg <<= 1;
@@ -473,7 +504,7 @@ void N16R::decodeStage() {
 
         if (opcode == 002) {
             func = instruction & 077;
-            stage.regVals[2] = stage.regVals[1];
+            stage.regVals[2] = stage.word1;
         }
         else {
             func = instruction & 07;
@@ -495,23 +526,14 @@ void N16R::decodeStage() {
 
         switch (func) {
             case 0: // lb
-                stage.memoryOp = MemoryReadByte;
-                stage.commitOp = CommitWriteBack;
-                stage.dstRegs[0] = aReg;
-                break;
             case 1: // lw
-                stage.memoryOp = MemoryReadWord;
+                stage.memoryOp = func == 0 ? MemoryReadByte : MemoryReadWord;
                 stage.commitOp = CommitWriteBack;
                 stage.dstRegs[0] = aReg;
                 break;
             case 2: // sb
-                stage.memoryOp = MemoryWriteByte;
-                stage.commitOp = CommitWrite;
-                stage.regVals[4] = registerFile[aReg];
-                stage.srcRegs[2] = aReg;
-                break;
             case 3: // sw
-                stage.memoryOp = MemoryWriteWord;
+                stage.memoryOp = func == 2 ? MemoryWriteByte : MemoryWriteWord;
                 stage.commitOp = CommitWrite;
                 stage.regVals[4] = registerFile[aReg];
                 stage.srcRegs[2] = aReg;
@@ -574,7 +596,7 @@ void N16R::decodeStage() {
         stage.exception = true;
     }
 
-    if (stage.exception) {
+    if (stage.exception && stage.exceptionType == ExceptNone) {
         stage.exceptionType = ExceptInvalidInstruction;
     }
 
@@ -747,7 +769,14 @@ void N16R::memoryStage() {
             writeOp.bytes++;
             writeOp.data.push_back(stage.regVals[4] >> 8);
         }
-        stage.regVals[1] = cacheController.queueOperation(writeOp);
+        uint16_t pendingOpId = cacheController.queueOperation(writeOp);
+        if (pendingOpId == MemoryOperation::invalidOperationId) {
+            stage.delayed = true;
+        }
+        else {
+            stage.delayed = false;
+            stage.regVals[1] = pendingOpId;
+        }
     }
 
     stageRegisters[3] = stage;
@@ -770,6 +799,11 @@ void N16R::writeBackStage() {
         stage.exceptionType = ExceptReservedInstruction;
     }
 
+    if (stage.commitOp == CommitSyscall) {
+        stage.exception = true;
+        stage.exceptionType = ExceptSyscall;
+    }
+
     if (stage.exception) {
         uint32_t ipc = registerFile[ipcRegister];
         ipc |= (registerFile[ipcRegister + 1] << 16);
@@ -780,7 +814,7 @@ void N16R::writeBackStage() {
         uint16_t status = registerFile[statusRegister];
 
         cause  = (cause  & 0xff00) | (stage.exceptionType << 2);
-        status = (status & 0xff00) | ((status << 2) && 0x003c);
+        status = (status & 0xff00) | ((status << 2) & 0x003c);
 
         // store cause and status
         registerFile[causeRegister ] = cause;
@@ -801,13 +835,24 @@ void N16R::writeBackStage() {
         return;
     }
 
+    bool taken = false;
+
     if (stage.commitOp == CommitNop) {
         return;
     }
-    else if (stage.commitOp == CommitExceptionReturn) {
+    else if (stage.commitOp == CommitExceptionReturn || stage.commitOp == CommitExceptionReturnJump) {
         uint16_t status = registerFile[statusRegister];
-        status = (status & 0xff00) | ((status >> 2) && 0x003f);
+        status = (status & 0xff00) | ((status >> 2) & 0x003f);
         registerFile[statusRegister] = status;
+
+        if (stage.commitOp == CommitExceptionReturnJump) {
+            taken = true;
+            stage.nextInstructionPointer = stage.regVals[0];
+            stage.nextInstructionPointer |= (stage.regVals[1] << 16);
+        }
+    }
+    else if (stage.commitOp == CommitJump) {
+        taken = true;
     }
     else if (stage.commitOp == CommitWriteBack) {
         for (int i = 0; i < 4; i++) {
@@ -825,7 +870,6 @@ void N16R::writeBackStage() {
         bool zero     =  checkValue == 0;
         bool negative = (checkValue & 0x8000) != 0;
 
-        bool taken = false;
         switch (stage.commitOp) {
             case CommitDecideEQ:
                 taken = zero;
@@ -849,13 +893,14 @@ void N16R::writeBackStage() {
                 taken = false;
                 break;
         }
-
-        stage.taken = taken;
-
-        if (taken) {
-            stageFlush(4);
-        }
     }
+
+    stage.taken = taken;
+
+    if (taken) {
+        stageFlush(4);
+    }
+
     stageRegisters[4] = stage;
 }
 
@@ -916,6 +961,12 @@ void N16R::stageShift() {
     }
 }
 
+void N16R::stageClearOut() {
+    for (int i = 0; i < 5; i++) {
+        stageRegistersOut[i].invalidate();
+    }
+}
+
 bool N16R::isKernel() {
     return (registerFile[statusRegister] & 0x2) == 0;
 }
@@ -957,13 +1008,20 @@ std::string N16R::command(std::stringstream &input) {
         }
     }
     else if (commandWord == "pipeline") {
-        response << "IP         NXIP       ALIP       PDBE   INST EXTR  XMC  0    1    2    3    4    5" << std::endl;
+        response << "IP         NXIP       ALIP       PDBET   INST EXTR  XMC  0    1    2    3    4    5" << std::endl;
         for (auto iter = stageRegisters.cbegin(); iter != stageRegisters.cend(); iter++) {
             response << std::setw(8) << std::setfill('0') << std::hex << iter->instructionPointer << "   ";
             response << std::setw(8) << std::setfill('0') << std::hex << iter->nextInstructionPointer << "   ";
             response << std::setw(8) << std::setfill('0') << std::hex << iter->altInstructionPointer << "   ";
             response << (iter->privileged ? '1' : '0') << (iter->delayed   ? '1' : '0');
-            response << (iter->bubble     ? '1' : '0') << (iter->exception ? '1' : '0') << "   ";
+            response << (iter->bubble     ? '1' : '0') << (iter->exception ? '1' : '0');
+            response << (iter->taken      ? '1' : '0') << "   ";
+
+            if (iter->bubble) {
+                response << std::endl;
+                continue;
+            }
+
             response << std::setw(4) << std::setfill('0') << std::hex << iter->word0 << " ";
             response << std::setw(4) << std::setfill('0') << std::hex << iter->word1 << "  ";
 
@@ -980,8 +1038,12 @@ std::string N16R::command(std::stringstream &input) {
             for (int i = 0; i < 4; i++) {
                 response << " " << std::setw(2) << std::setfill('0') << std::hex << (int) iter->dstRegs[i];
             }
-            response << std::endl;
+
+            response << " " << iter->exceptionType << std::endl;
         }
+    }
+    else if (commandWord == "memory") {
+        response << cacheController.describeQueuedOperations() << std::endl;
     }
 
     response << "Ok.";
@@ -995,13 +1057,18 @@ void N16R::reset() {
     resetVector.nextInstructionPointer = resetAddress;
     resetVector.bubble = false;
 
+    StageRegister bubble;
+    bubble.bubble = true;
+
     stageRegisters.clear();
+    stageRegistersOut.clear();
+
     stageRegisters.push_back(resetVector);
+    stageRegistersOut.push_back(bubble);
 
     for (int i = 0; i < 4; i++) {
-        StageRegister bubble;
-        bubble.bubble = true;
         stageRegisters.push_back(bubble);
+        stageRegistersOut.push_back(bubble);
     }
 
     registerFile[041] = 0;
@@ -1009,8 +1076,30 @@ void N16R::reset() {
     busUnit.reset();
 }
 
+bool N16R::breakpointHit() {
+    bool wasHit = breakpointWasHit;
+    breakpointWasHit = false;
+    return wasHit;
+}
+void N16R::breakpointClear() {
+    breakpoints.clear();
+}
+void N16R::breakpointAdd(uint32_t addr) {
+    if (!breakpoints.contains(addr)) {
+        breakpoints.insert(addr);
+    }
+}
+void N16R::breakpointRemove(uint32_t addr) {
+    auto location = breakpoints.find(addr);
+    if (location != breakpoints.end()) {
+        breakpoints.erase(location);
+    }
+}
+
 StageRegister::StageRegister(): executeOp(ExecuteNop), memoryOp(MemoryNop), commitOp(CommitNop) {
     invalidate();
+    privileged = false;
+    taken = false;
 }
 
 void StageRegister::invalidate() {

@@ -212,8 +212,8 @@ BusOperation MemoryOperation::asBusOperation() {
         }
         else {
             for (int i = 0; i < data.size(); i += 2) {
-                uint16_t word = op.data[i];
-                word |= ((uint16_t) op.data[i + 1]) << 8;
+                uint16_t word = data[i];
+                word |= ((uint16_t) data[i + 1]) << 8;
                 op.data.push_back(word);
             }
         }
@@ -232,9 +232,11 @@ void CacheController::addNoCacheRegion(uint32_t start, uint32_t length) {
 }
 
 bool CacheController::contains(CacheType type, uint32_t address, uint32_t asid) {
-    return canCache(address) &&
-        caches.contains(type) &&
-        caches[type].contains(address, asid);
+    if (!canCache(address)) {
+        return false;
+    }
+
+    return caches.contains(type) && caches[type].contains(address, asid);
 }
 
 uint16_t CacheController::read(CacheType type, uint32_t address, uint32_t asid) {
@@ -270,15 +272,23 @@ uint16_t CacheController::queueRead(MemoryReadType type, uint32_t address, uint3
 uint16_t CacheController::queueOperation(MemoryOperation operation) {
     std::set<uint16_t> existingIds;
     uint16_t operationId = 0;
+    int queuedCount = 0;
     for (auto op: queuedOperations) {
         existingIds.insert(op.operationId);
         operationId = op.operationId;
+
+        if (operation.type == op.type && op.isValid()) {
+            queuedCount++;
+            if (queuedCount > 1) {
+                return MemoryOperation::invalidOperationId;
+            }
+        }
     }
 
     do {
         operationId++;
     }
-    while (existingIds.contains(operationId));
+    while (existingIds.contains(operationId) || operationId == MemoryOperation::invalidOperationId);
 
     operation.operationId = operationId;
 
@@ -358,6 +368,37 @@ void CacheController::ingestWord(uint16_t word) {
 
         pending.invalidate();
     }
+}
+
+std::string CacheController::describeQueuedOperations() {
+    std::stringstream response;
+
+    response << "C  ADDR      T B   BYTES";
+
+    for (auto iter = queuedOperations.cbegin(); iter != queuedOperations.cend(); iter++) {
+        //if (!(iter->isValid())) {
+            //continue;
+        //}
+        response << std::endl << (iter->committed ? 1 : 0) << "  ";
+        response << std::setw(8) << std::setfill('0') << std::hex << iter->address << "  ";
+        response << iter->type << " " << std::setw(2) << std::dec << iter->bytes << " ";
+
+        for (auto it = iter->data.cbegin(); it != iter->data.cend(); it++) {
+            response << " " << std::setw(2) << std::setfill('0') << std::hex << (int)(*it);
+        }
+    }
+
+    if (pendingOperation.isValid()) {
+        response << std::endl << "1  ";
+        response << std::setw(8) << std::setfill('0') << std::hex << pendingOperation.address << "  ";
+        response << pendingOperation.type << " " << std::setw(2) << std::dec << pendingOperation.bytes << " ";
+
+        for (auto it = pendingOperation.data.cbegin(); it != pendingOperation.data.cend(); it++) {
+            response << " " << std::setw(2) << std::setfill('0') << std::hex << (int) (*it);
+        }
+    }
+
+    return response.str();
 }
 
 bool CacheController::canCache(uint32_t address) {

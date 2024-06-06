@@ -136,7 +136,7 @@ void Machine::run() {
     debug("Entering loop");
     debug("");
 
-    RunMode runMode = RunMode::SteppingMode;
+    runMode = RunMode::SteppingMode;
     while (running) {
         std::cout << "> ";
         std::cin.getline(commandBuffer, 255);
@@ -149,6 +149,29 @@ void Machine::run() {
             stopRunning();
         }
         else if (command == "b" || command == "bp") {
+            commandWord = "";
+            cs >> commandWord;
+
+            std::shared_ptr<nbus::n16r::N16R> cpu = std::static_pointer_cast<nbus::n16r::N16R>(getDevice("n16r"));
+            if (commandWord == "a" || commandWord == "d") {
+                std::string locationStr;
+                cs >> locationStr;
+                uint32_t location;
+                try {
+                    location = std::stoul(locationStr, nullptr, 0);
+
+                    if (commandWord == "a") {
+                        cpu->breakpointAdd(location);
+                    }
+                    else {
+                        cpu->breakpointRemove(location);
+                    }
+                }
+                catch (std::invalid_argument e) {}
+            }
+            else if (commandWord == "c") {
+                cpu->breakpointClear();
+            }
         }
         else if (runMode == RunMode::SteppingMode) {
             if (command == "pulse") {
@@ -180,6 +203,9 @@ void Machine::run() {
                 catch (std::invalid_argument e) {}
 
                 clockRunning = true;
+                if (runThread.joinable()) {
+                    runThread.join();
+                }
                 runThread = std::thread(machineRun, std::ref(*this), clockRate);
             }
             else if (command == "bus") {
@@ -215,15 +241,15 @@ void Machine::run() {
                 auto device = getDevice("n16r");
                 std::stringstream a("status");
                 std::stringstream b("pipeline");
+                std::stringstream c("memory");
                 std::cout << device->command(a) << std::endl;
                 std::cout << device->command(b) << std::endl;
+                std::cout << device->command(c) << std::endl;
             }
         }
         else if (runMode == RunMode::FreeRunMode) {
             if (command == "p" || command == "pause") {
                 stopRunning();
-                runCycles = 0;
-                runMode = RunMode::SteppingMode;
             }
         }
         else if (command != "") {
@@ -236,6 +262,7 @@ void Machine::run() {
 
 void Machine::startRunning(int clockRate) {
     std::shared_ptr<nbus::NBus> bus = std::static_pointer_cast<nbus::NBus>(getDevice("nbus"));
+    std::shared_ptr<nbus::n16r::N16R> cpu = std::static_pointer_cast<nbus::n16r::N16R>(getDevice("n16r"));
 
     runCycles = 0;
     runStart = std::chrono::steady_clock::now();
@@ -244,14 +271,12 @@ void Machine::startRunning(int clockRate) {
         bus->clockDown();
 
         runCycles++;
+
+        if (cpu->breakpointHit()) {
+            clockRunning = false;
+        }
     }
     runEnd = std::chrono::steady_clock::now();
-}
-void Machine::stopRunning() {
-    clockRunning = false;
-    if (runThread.joinable()) {
-        runThread.join();
-    }
 
     auto diff = std::chrono::nanoseconds(runEnd - runStart).count();
 
@@ -262,6 +287,19 @@ void Machine::stopRunning() {
     std::cout << "ticks: " << runCycles << std::endl;
     std::cout << "ns:    " << diff << std::endl;
     std::cout << "       " << (runCycles / ((double) diff / 1000000)) << "kHz" << std::endl;
+    
+    runCycles = 0;
+    runMode = RunMode::SteppingMode;
+}
+void Machine::stopRunning() {
+    clockRunning = false;
+    if (runThread.joinable()) {
+        runThread.join();
+    }
+    else {
+        runCycles = 0;
+        runMode = RunMode::SteppingMode;
+    }
 }
 
 void machineRun(Machine& machine, int clockRate) {

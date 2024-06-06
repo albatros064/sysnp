@@ -130,6 +130,8 @@ struct MemoryOperation {
     void invalidate() { bytes = 0; committed = false; }
 
     BusOperation asBusOperation();
+
+    const static uint16_t invalidOperationId = 0xffff;
 };
 
 class CacheController {
@@ -151,6 +153,8 @@ class CacheController {
         bool isOperationPrepared();
         MemoryOperation getOperation();
         void ingestWord(uint16_t);
+
+        std::string describeQueuedOperations();
     private:
         std::vector<MemoryOperation> queuedOperations;
         MemoryOperation pendingOperation;

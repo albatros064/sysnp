@@ -43,6 +43,7 @@ class BusUnit {
         std::shared_ptr<NBusInterface> interface;
 
         BusPhase phase;
+        bool notReady;
 
         BusOperation currentOperation;
 

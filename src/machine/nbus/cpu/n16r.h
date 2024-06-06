@@ -61,6 +61,8 @@ enum CommitOp {
     CommitWriteBack,
     CommitWrite,
 
+    CommitJump,
+
     CommitDecideEQ,
     CommitDecideNE,
     CommitDecideGT,
@@ -68,7 +70,9 @@ enum CommitOp {
     CommitDecideLT,
     CommitDecideGE,
 
-    CommitExceptionReturn
+    CommitSyscall,
+    CommitExceptionReturn,
+    CommitExceptionReturnJump
 };
 
 class StageRegister {
@@ -118,6 +122,12 @@ class N16R : public NBusDevice {
         virtual void clockDown();
 
         virtual std::string command(std::stringstream&);
+
+        // breakpoints
+        virtual void breakpointClear();
+        virtual void breakpointAdd(uint32_t);
+        virtual void breakpointRemove(uint32_t);
+        virtual bool breakpointHit();
     private:
         uint16_t registerFile[48];
 
@@ -128,6 +138,7 @@ class N16R : public NBusDevice {
         const static uint8_t epcRegister = 46;
 
         std::vector<StageRegister> stageRegisters;
+        std::vector<StageRegister> stageRegistersOut;
         std::set<uint8_t> registerHazards;
 
         void fetchStage();
@@ -138,6 +149,7 @@ class N16R : public NBusDevice {
 
         void stageFlush(int);
         void stageShift();
+        void stageClearOut();
 
         CacheController cacheController;
 
@@ -150,6 +162,11 @@ class N16R : public NBusDevice {
         bool hasInterrupts();
 
         void reset();
+
+        // breakpoints
+        uint32_t lastBreakpoint;
+        bool breakpointWasHit;
+        std::set<uint32_t> breakpoints;
 };
 
 }; // namespace n16r

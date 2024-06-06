@@ -45,6 +45,7 @@ class Machine : public std::enable_shared_from_this<Machine> {
     std::chrono::time_point<std::chrono::steady_clock> runStart;
     std::chrono::time_point<std::chrono::steady_clock> runEnd;
     
+    RunMode runMode;
     std::thread runThread;
     std::mutex  runThreadMutex;
 

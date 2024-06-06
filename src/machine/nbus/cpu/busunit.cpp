@@ -15,6 +15,7 @@ void BusUnit::reset() {
     BusOperation op;
     op.isValid = false;
     currentOperation = op;
+    notReady = false;
     interruptState = 0;
 }
 
@@ -67,7 +68,7 @@ void BusUnit::clockDown() {
     }
     interruptState = interrupts;
 
-    bool notReady =             interface->senseSignal(NBusSignal::NotReady) > 0;
+    notReady = interface->senseSignal(NBusSignal::NotReady) > 0;
     uint16_t data = (uint16_t) (interface->senseSignal(NBusSignal::Data    ) & 0xffff);
 
     switch (phase) {
@@ -101,7 +102,7 @@ void BusUnit::clockDown() {
 }
 
 bool BusUnit::isIdle() {
-    return phase == BusPhase::BusIdle;
+    return phase == BusPhase::BusIdle && !notReady;
 }
 
 bool BusUnit::hasData() {
