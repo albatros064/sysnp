@@ -3,3 +3,5 @@
 
 build/
 data/vtty
+data/bios/*.o
+data/bios/*.o.sym
