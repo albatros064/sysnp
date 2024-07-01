@@ -33,7 +33,9 @@ enum ExecuteOp {
     ExecuteNop,
 
     ExecuteAdd,
+    ExecuteAddHalf,
     ExecuteSubtract,
+    ExecuteSubtractHalf,
     ExecuteSetLessThan,
     ExecuteAnd,
     ExecuteOr,
@@ -86,12 +88,12 @@ class StageRegister {
         uint32_t nextInstructionPointer;
         uint32_t altInstructionPointer;
 
-        uint16_t word0;
-        uint16_t word1;
-
-        uint16_t regVals[6];
-        uint8_t  srcRegs[6];
-        uint8_t  dstRegs[4];
+        uint16_t fetch  [2];
+        uint16_t decode [4];
+        uint16_t execute[4];
+        uint16_t memory [1];
+        uint8_t  srcRegs[4];
+        uint8_t  dstRegs[5];
 
         ExecuteOp executeOp;
         MemoryOp  memoryOp;
@@ -133,6 +135,7 @@ class N16R : public NBusDevice {
 
         const static uint8_t causeRegister = 32;
         const static uint8_t statusRegister = 33;
+        const static uint8_t asidRegister = 38;
         const static uint8_t ipcRegister = 42;
         const static uint8_t bvaRegister = 44;
         const static uint8_t epcRegister = 46;
