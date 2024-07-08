@@ -127,8 +127,8 @@ void Serial::clockUp() {
                 data |= 0x200;
             }
 
-            interface->assert(NBusSignal::Data, data);
-            interface->deassert(interrupt);
+            interface->assertSignal(NBusSignal::Data, data);
+            interface->deassertSignal(interrupt);
             hasInData = false;
 
             inDataMutex.unlock();
@@ -148,13 +148,13 @@ void Serial::clockUp() {
     }
     else if (status == SerialStatus::SerialCleanup) {
         machine->debug(6, "Serial::clockUp() SerialCleanup");
-        interface->deassert(NBusSignal::Data);
+        interface->deassertSignal(NBusSignal::Data);
         status = SerialStatus::SerialReady;
     }
 
     if (hasInData || (lastOutData != hasOutData)) {
         machine->debug(6, "Serial::clockUp() Interrupting");
-        interface->assert(interrupt, 1);
+        interface->assertSignal(interrupt, 1);
     }
     lastOutData = hasOutData;
 }
@@ -162,14 +162,14 @@ void Serial::clockUp() {
 void Serial::clockDown() {
     machine->debug("Serial::clockDown()");
 
-    uint32_t read  = interface->sense(NBusSignal::ReadEnable);
-    uint32_t write = interface->sense(NBusSignal::WriteEnable);
+    uint32_t read  = interface->senseSignal(NBusSignal::ReadEnable);
+    uint32_t write = interface->senseSignal(NBusSignal::WriteEnable);
 
     if (status == SerialStatus::SerialReady) {
         machine->debug("Latching bus lines");
         if (read || write) {
-            addressLatch = interface->sense(NBusSignal::Address) & 0xfffffffe;
-            dataLatch    = interface->sense(NBusSignal::Data   );
+            addressLatch = interface->senseSignal(NBusSignal::Address) & 0xfffffffe;
+            dataLatch    = interface->senseSignal(NBusSignal::Data   );
             readLatch  = read;
             writeLatch = write;
 

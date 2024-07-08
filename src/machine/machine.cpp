@@ -136,7 +136,7 @@ void Machine::run() {
     debug("Entering loop");
     debug("");
 
-    RunMode runMode = RunMode::SteppingMode;
+    runMode = RunMode::SteppingMode;
     while (running) {
         std::cout << "> ";
         std::cin.getline(commandBuffer, 255);
@@ -149,6 +149,29 @@ void Machine::run() {
             stopRunning();
         }
         else if (command == "b" || command == "bp") {
+            commandWord = "";
+            cs >> commandWord;
+
+            std::shared_ptr<nbus::n16r::N16R> cpu = std::static_pointer_cast<nbus::n16r::N16R>(getDevice("n16r"));
+            if (commandWord == "a" || commandWord == "d") {
+                std::string locationStr;
+                cs >> locationStr;
+                uint32_t location;
+                try {
+                    location = std::stoul(locationStr, nullptr, 0);
+
+                    if (commandWord == "a") {
+                        cpu->breakpointAdd(location);
+                    }
+                    else {
+                        cpu->breakpointRemove(location);
+                    }
+                }
+                catch (std::invalid_argument e) {}
+            }
+            else if (commandWord == "c") {
+                cpu->breakpointClear();
+            }
         }
         else if (runMode == RunMode::SteppingMode) {
             if (command == "pulse") {
@@ -172,15 +195,18 @@ void Machine::run() {
 
                 runMode = RunMode::FreeRunMode;
 
-                int clockRate = 0;
+                int maxCycles = 0;
 
                 try {
-                    clockRate = std::stoi(commandWord);
+                    maxCycles = std::stoi(commandWord);
                 }
                 catch (std::invalid_argument e) {}
 
                 clockRunning = true;
-                runThread = std::thread(machineRun, std::ref(*this), clockRate);
+                if (runThread.joinable()) {
+                    runThread.join();
+                }
+                runThread = std::thread(machineRun, std::ref(*this), maxCycles);
             }
             else if (command == "bus") {
                 std::cout << bus->command(cs) << std::endl;
@@ -211,11 +237,44 @@ void Machine::run() {
                     }
                 }
             }
+            else if (command == "d") {
+                auto device = getDevice("n16r");
+                std::stringstream a("status");
+                std::stringstream b("pipeline");
+                std::stringstream c("memio");
+                std::cout << device->command(a) << std::endl;
+                std::cout << device->command(b) << std::endl;
+                std::cout << device->command(c) << std::endl;
+            }
+            else if (command == "t") {
+                auto device = getDevice("n16r");
+                std::stringstream a("trace");
+                std::stringstream b("pipeline");
+                std::cout << device->command(a) << std::endl;
+                std::cout << device->command(b) << std::endl;
+            }
+            else if (command == "m") {
+                auto device1 = getDevice("memory");
+                auto device2 = getDevice("n16r");
+                std::stringstream a;
+                std::stringstream b;
+
+                cs >> commandWord;
+                a << " " << commandWord;
+                b << "cache " << commandWord;
+
+                commandWord = "";
+                cs >> commandWord;
+                a << " " << commandWord;
+                b << " " << commandWord;
+
+                std::cout << "M:" << std::endl << device1->command(a) << std::endl;
+                std::cout << "C:" << std::endl << device2->command(b) << std::endl;
+            }
         }
         else if (runMode == RunMode::FreeRunMode) {
             if (command == "p" || command == "pause") {
                 stopRunning();
-                runMode = RunMode::SteppingMode;
             }
         }
         else if (command != "") {
@@ -226,8 +285,9 @@ void Machine::run() {
     debug("Exiting");
 }
 
-void Machine::startRunning(int clockRate) {
+void Machine::startRunning(int maxCycles) {
     std::shared_ptr<nbus::NBus> bus = std::static_pointer_cast<nbus::NBus>(getDevice("nbus"));
+    std::shared_ptr<nbus::n16r::N16R> cpu = std::static_pointer_cast<nbus::n16r::N16R>(getDevice("n16r"));
 
     runCycles = 0;
     runStart = std::chrono::steady_clock::now();
@@ -236,23 +296,43 @@ void Machine::startRunning(int clockRate) {
         bus->clockDown();
 
         runCycles++;
+
+        if (cpu->breakpointHit()) {
+            clockRunning = false;
+        }
+
+        if (maxCycles > 0 && runCycles >= maxCycles) {
+            clockRunning = false;
+        }
     }
     runEnd = std::chrono::steady_clock::now();
+
+    auto diff = std::chrono::nanoseconds(runEnd - runStart).count();
+
+    if (runCycles <= 0) {
+        return;
+    }
+
+    std::cout << "ticks: " << runCycles << std::endl;
+    std::cout << "ns:    " << diff << std::endl;
+    std::cout << "       " << (runCycles / ((double) diff / 1000000)) << "kHz" << std::endl;
+    
+    runCycles = 0;
+    runMode = RunMode::SteppingMode;
 }
 void Machine::stopRunning() {
     clockRunning = false;
     if (runThread.joinable()) {
         runThread.join();
     }
-
-    auto diff = std::chrono::nanoseconds(runEnd - runStart).count();
-    std::cout << "ticks: " << runCycles << std::endl;
-    std::cout << "ns:    " << diff << std::endl;
-    std::cout << "       " << (runCycles / ((double) diff / 1000000000)) << "Hz" << std::endl;
+    else {
+        runCycles = 0;
+        runMode = RunMode::SteppingMode;
+    }
 }
 
-void machineRun(Machine& machine, int clockRate) {
-    machine.startRunning(clockRate);
+void machineRun(Machine& machine, int maxCycles) {
+    machine.startRunning(maxCycles);
 }
 
 }; // namespace

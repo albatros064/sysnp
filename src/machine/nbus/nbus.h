@@ -37,7 +37,7 @@ class NBus : public Device , public std::enable_shared_from_this<NBus>  {
         virtual void clockUp  ();
         virtual void clockDown();
 
-        uint32_t sense(NBusSignal);
+        uint32_t senseSignal(NBusSignal);
 
         void addInterface(std::shared_ptr<NBusInterface>);
         std::shared_ptr<NBusInterface> getIndependentInterface();
@@ -58,9 +58,9 @@ class NBusInterface {
     public:
         NBusInterface(std::shared_ptr<NBus>, std::shared_ptr<Device>);
         virtual ~NBusInterface() {};
-        void assert(NBusSignal, uint32_t);
-        void deassert(NBusSignal);
-        uint32_t sense(NBusSignal);
+        void assertSignal(NBusSignal, uint32_t);
+        void deassertSignal(NBusSignal);
+        uint32_t senseSignal(NBusSignal);
 
         virtual void clockUp  ();
         virtual void clockDown();
@@ -68,7 +68,7 @@ class NBusInterface {
         std::array<uint32_t, NBusSignal::NotReady + 1> signals;
         std::shared_ptr<NBus> bus;
         std::shared_ptr<Device> device;
-        friend uint32_t NBus::sense(NBusSignal);
+        friend uint32_t NBus::senseSignal(NBusSignal);
 };
 
 class NBusDevice : public Device {
