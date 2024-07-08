@@ -77,6 +77,11 @@ enum CommitOp {
     CommitExceptionReturn,
     CommitExceptionReturnJump
 };
+enum OperandHazard {
+    OperandHazardNone,
+    OperandHazardCurrent,
+    OperandHazardNext
+};
 
 class StageRegister {
     public:
@@ -110,6 +115,9 @@ class StageRegister {
         bool taken;
         bool exception;
         ExceptionType exceptionType;
+
+        OperandHazard checkOperandHazard(uint8_t, uint8_t);
+        uint16_t operandForward(uint8_t, uint8_t);
 
         const static uint8_t emptyRegister = 255;
 };

@@ -232,6 +232,9 @@ void N16R::decodeStage() {
     auto instruction = stage.fetch[0];
     uint8_t opcode = (instruction >> 12) & 0xf;
 
+    uint32_t target;
+
+    bool latePopulateNext = false;
     bool isPrivileged = false;
 
     if (opcode == 000) {
@@ -255,7 +258,6 @@ void N16R::decodeStage() {
 
         bool isExchange = false;
 
-        uint32_t target;
 
         switch (func) {
             case 001: // mov.32 D->D
@@ -382,16 +384,12 @@ void N16R::decodeStage() {
                     aReg += 020;
                 }
 
-                target = registerFile[aReg + 1];
-                target <<= 16;
-                target |= registerFile[aReg];
+                stage.decode[2] = registerFile[aReg];
+                stage.decode[3] = registerFile[aReg + 1];
+                stage.srcRegs[2] = aReg;
+                stage.srcRegs[3] = aReg + 1;
 
-                stage.nextInstructionPointer = target;
-                stage.altInstructionPointer = target;
-                stage.srcRegs[0] = aReg;
-                stage.srcRegs[1] = aReg + 1;
-
-                //stageFlush(1);
+                latePopulateNext = true;
 
                 isCustom = true;
                 break;
@@ -538,7 +536,7 @@ void N16R::decodeStage() {
 
             uint8_t cReg = (instruction >> 3) & 07;
             stage.decode[2] = registerFile[cReg];
-            stage.srcRegs[3] = cReg;
+            stage.srcRegs[2] = cReg;
         }
 
         stage.decode[0] = registerFile[bReg];
@@ -560,7 +558,7 @@ void N16R::decodeStage() {
                 stage.memoryOp = func == 2 ? MemoryWriteByte : MemoryWriteWord;
                 stage.commitOp = CommitWrite;
                 stage.decode[3] = registerFile[aReg];
-                stage.srcRegs[2] = aReg;
+                stage.srcRegs[3] = aReg;
                 break;
             default:
                 stage.exception = true;
@@ -583,7 +581,7 @@ void N16R::decodeStage() {
         stage.decode[3] = 0;
 
         stage.srcRegs[0] = aReg;
-        stage.srcRegs[1] = bReg;
+        stage.srcRegs[2] = bReg;
 
         stage.executeOp = ExecuteSubtract;
         stage.memoryOp = MemoryNop;
@@ -625,22 +623,33 @@ void N16R::decodeStage() {
 
     stage.delayed = false;
     // Check register hazards
-    for (int i = 0; i < 4 && !stage.delayed; i++) {
+    for (int i = 0; i < 4; i++) {
         if (stage.srcRegs[i] == StageRegister::emptyRegister) {
             continue;
         }
-        if (registerHazards.contains(stage.srcRegs[i])) {
-            stage.delayed = true;
+        for (int s = 2; s < 5; s++) {
+            OperandHazard hazard = stageRegisters[s].checkOperandHazard(stage.srcRegs[i], s);
+            if (hazard == OperandHazardNone) {
+                continue;
+            }
+            if (hazard == OperandHazardNext) {
+                stage.delayed = true;
+                break;
+            }
+            stage.decode[i] = stageRegisters[s].operandForward(stage.srcRegs[i], s);
+            break;
+        }
+        if (stage.delayed) {
             break;
         }
     }
 
-    if (stage.delayed) {
-        // unset dstRegs so they don't unintentionally impede
-        // this instruction next cycle
-        for (int i = 0; i < 5; i++) {
-            stage.dstRegs[i] = StageRegister::emptyRegister;
-        }
+    if (latePopulateNext) {
+        target = stage.decode[2];
+        target |= ((uint32_t) stage.decode[3]) << 16;
+
+        stage.nextInstructionPointer = target;
+        stage.altInstructionPointer = target;
     }
 
     stageRegisters[1] = stage;
@@ -887,6 +896,7 @@ void N16R::writeBackStage() {
         if (stage.dstRegs[4] != StageRegister::emptyRegister) {
             registerFile[stage.dstRegs[4]] = stage.memory[0];
         }
+
     }
     else if (stage.commitOp == CommitWrite) {
         cacheController.commitOperation(stage.memory[0]);
@@ -1128,7 +1138,7 @@ std::string N16R::command(std::stringstream &input) {
             response << std::endl;
         }
 
-        response << std::dec << "c: " << clockCount << ", r: " << retiredCount << ", ipc: " << ((float) retiredCount / (float) clockCount) << std::endl;
+        response << std::dec << "c: " << clockCount << ", r: " << retiredCount << ", ipc: " << ((float) retiredCount / (float) clockCount) << ", cpi: " << ((float) clockCount / (float) retiredCount) << std::endl;
     }
 
     response << "Ok.";
@@ -1203,6 +1213,43 @@ void StageRegister::invalidate() {
     for (int i = 0; i < 5; i++) {
         dstRegs[i] = emptyRegister;
     }
+}
+
+OperandHazard StageRegister::checkOperandHazard(uint8_t reg, uint8_t stage) {
+    if (bubble) {
+        return OperandHazardNone;
+    }
+    if (stage == 2) {
+        for (int i = 0; i < 4; i++) {
+            if (reg == dstRegs[i]) {
+                return OperandHazardCurrent;
+            }
+        }
+        if (dstRegs[4] == reg) {
+            return OperandHazardNext;
+        }
+    }
+    else if (stage >= 3) {
+        for (int i = 0; i < 5; i++) {
+            if (reg == dstRegs[i]) {
+                return delayed ? OperandHazardNext : OperandHazardCurrent;
+            }
+        }
+    }
+
+    return OperandHazardNone;
+}
+uint16_t StageRegister::operandForward(uint8_t reg, uint8_t stage) {
+    for (int i = 0; i < 4; i++) {
+        if (reg == dstRegs[i]) {
+            return execute[i];
+        }
+    }
+    if (stage >= 3 && reg == dstRegs[4]) {
+        return memory[0];
+    }
+
+    return 0;
 }
 
 }; // namespace n16r
