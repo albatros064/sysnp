@@ -150,6 +150,7 @@ uint16_t Cache::readWord(uint32_t address, uint32_t asid) {
     if (address & 1) {
         // misaligned
     }
+    address &= 0xfffffffe;
     return (uint16_t) (read(address, asid, 2) & 0xffff);
 }
 uint32_t Cache::readDword(uint32_t address, uint32_t asid) {
@@ -165,9 +166,9 @@ uint32_t Cache::read(uint32_t address, uint32_t asid, int count) {
 
     uint32_t value = 0;
 
-    for (auto byte: byteValues) {
+    for (auto iter = byteValues.crbegin(); iter != byteValues.crend(); iter++) {
         value <<= 8;
-        value |= byte;
+        value |= *iter;
     }
 
     return value;
@@ -198,6 +199,7 @@ int Cache::getLineBytes() {
 BusOperation MemoryOperation::asBusOperation() {
     BusOperation op;
     op.address = address;
+    op.isValid = true;
     op.isRead = type != MemoryOperationDataWrite;
     op.bytes = bytes;
 
@@ -233,6 +235,9 @@ void CacheController::addNoCacheRegion(uint32_t start, uint32_t length) {
 
 bool CacheController::contains(CacheType type, uint32_t address, uint32_t asid) {
     if (!canCache(address)) {
+        if (lastUncachedRead.isValid() && lastUncachedRead.address == (lastUncachedRead.address & address)) {
+            return true;
+        }
         return false;
     }
 
@@ -240,6 +245,17 @@ bool CacheController::contains(CacheType type, uint32_t address, uint32_t asid) 
 }
 
 uint16_t CacheController::read(CacheType type, uint32_t address, uint32_t asid) {
+    if (lastUncachedRead.isValid() && lastUncachedRead.address == (lastUncachedRead.address & address)) {
+        uint16_t value = 0;
+        for (auto iter = lastUncachedRead.data.crbegin(); iter != lastUncachedRead.data.crend(); iter++) {
+        //for (auto byte: lastUncachedRead.data) {
+            value <<= 8;
+            value |= *iter;
+        }
+        lastUncachedRead.invalidate();
+        return value;
+    }
+
     if (caches[type].contains(address, asid)) {
         return caches[type].readWord(address, asid);
     }
@@ -338,7 +354,14 @@ MemoryOperation CacheController::getOperation() {
         if (queuedOperations[i].isReady()) {
             auto op = queuedOperations[i];
             queuedOperations.erase(queuedOperations.begin() + i);
-            if (op.type != MemoryOperationDataWrite) {
+            if (op.type == MemoryOperationDataWrite) {
+                for (auto c: {InstructionCache, DataCache, UnifiedL2Cache}) {
+                    if (contains(c, op.address, op.asid)) {
+                        caches[c].write(op.address, op.asid, op.data);
+                    }
+                }
+            }
+            else {
                 pendingOperation = op;
             }
             return op;
@@ -360,11 +383,17 @@ void CacheController::ingestWord(uint16_t word) {
 
     MemoryOperation& pending = pendingOperation;
 
-    pending.data.push_back(high);
     pending.data.push_back(low);
+    pending.data.push_back(high);
+
     if (pending.data.size() == pending.bytes) {
-        CacheType type = pending.type == MemoryOperationInstructionRead ? InstructionCache : DataCache;
-        caches[type].load(pending.address, pending.asid, 0, pending.data);
+        if (canCache(pending.address)) {
+            CacheType type = pending.type == MemoryOperationInstructionRead ? InstructionCache : DataCache;
+            caches[type].load(pending.address, pending.asid, 0, pending.data);
+        }
+        else {
+            lastUncachedRead = pending;
+        }
 
         pending.invalidate();
     }
@@ -389,7 +418,7 @@ std::string CacheController::describeQueuedOperations() {
     }
 
     if (pendingOperation.isValid()) {
-        response << std::endl << "1  ";
+        response << std::endl << "p  ";
         response << std::setw(8) << std::setfill('0') << std::hex << pendingOperation.address << "  ";
         response << pendingOperation.type << " " << std::setw(2) << std::dec << pendingOperation.bytes << " ";
 
@@ -398,6 +427,36 @@ std::string CacheController::describeQueuedOperations() {
         }
     }
 
+    return response.str();
+}
+
+std::string CacheController::listContents(std::stringstream &input) {
+    std::stringstream response;
+    std::string locationStr;
+    uint16_t length = 64;
+    uint32_t location;
+
+    input >> locationStr >> length;
+    location = std::stoul(locationStr, nullptr, 0);
+    location >>= 3;
+    location <<= 3;
+    length >>= 1;
+
+    for (int i = 0; i < length / 4; i++) {
+        response << std::setw(8) << std::setfill('0') << std::hex << (location + (i << 3)) << " ";
+        for (int b = 0; b < 4; b++) {
+            uint32_t address = location + (i << 3) + (b << 1);
+            if (contains(DataCache, address, 0)) {
+                uint16_t datum = read(DataCache, address, 0);
+                response << " " << std::setw(2) << std::setfill('0') << std::hex << (datum & 0xff);
+                response << " " << std::setw(2) << std::setfill('0') << std::hex << (datum >> 8);
+            }
+            else {
+                response << " .. ..";
+            }
+        }
+        response << std::endl;
+    }
     return response.str();
 }
 

@@ -13,17 +13,19 @@ uint16_t byteswap(uint16_t val) {
     ret |= val >> 8;
     return ret;
 }
-uint16_t e8s16(uint8_t val) {
-    if (val & 0x80) {
-        val |= 0xff00;
+uint16_t e8s16(uint8_t in) {
+    uint16_t out = in;
+    if (out & 0x80) {
+        out |= 0xff00;
     }
-    return val;
+    return out;
 }
-uint32_t e16s32(uint16_t val) {
-    if (val & 0x8000) {
-        val |= 0xffff0000;
+uint32_t e16s32(uint16_t in) {
+    uint32_t out = in;
+    if (out & 0x8000) {
+        out |= 0xffff0000;
     }
-    return val;
+    return out;
 }
 
 void N16R::init(const libconfig::Setting &setting) {
@@ -80,6 +82,8 @@ void N16R::postInit() {
 
     lastBreakpoint = 0;
     breakpointWasHit = false;
+
+    retiredAddresses.set_capacity(512);
 }
 
 void N16R::clockUp() {
@@ -96,6 +100,7 @@ void N16R::clockUp() {
 
     if (busUnit.isIdle()) {
         if (cacheController.isOperationPrepared()) {
+            machine->debug("Queueing operation");
             busUnit.queueOperation(cacheController.getOperation().asBusOperation());
         }
     }
@@ -109,6 +114,8 @@ void N16R::clockDown() {
     stageShift();
     stageClearOut();
 
+    clockCount++;
+
     machine->debug("Processing bus unit");
     busUnit.clockDown();
 
@@ -116,12 +123,9 @@ void N16R::clockDown() {
         cacheController.ingestWord(busUnit.getWord());
     }
 
-    uint16_t pendingInterrupts = 0;
-    if (registerFile[statusRegister] & 1) {
-        pendingInterrupts = busUnit.hasInterrupt();
-        pendingInterrupts <<= 8;
-        pendingInterrupts &= registerFile[statusRegister];
-    }
+    uint16_t pendingInterrupts = busUnit.hasInterrupt();
+    pendingInterrupts <<= 8;
+    pendingInterrupts &= registerFile[statusRegister];
 
     registerFile[causeRegister] = (registerFile[causeRegister] & 0xff) | pendingInterrupts;
 }
@@ -155,6 +159,7 @@ void N16R::fetchStage() {
 
         if (cacheController.contains(InstructionCache, nextWord, 0)) {
             stage.fetch[1] = byteswap(cacheController.read(InstructionCache, nextWord, 0));
+            //stage.fetch[1] = cacheController.read(InstructionCache, nextWord, 0);
             stage.delayed = false;
         }
         else {
@@ -165,6 +170,7 @@ void N16R::fetchStage() {
     else if (cacheController.contains(InstructionCache, stage.instructionPointer, 0)) {
         machine->debug("Fetch found");
         stage.fetch[0] = byteswap(cacheController.read(InstructionCache, stage.instructionPointer, 0));
+        //stage.fetch[0] = cacheController.read(InstructionCache, stage.instructionPointer, 0);
         stage.delayed = false;
     }
     else if (!stage.delayed) {
@@ -185,6 +191,7 @@ void N16R::fetchStage() {
 
             if (cacheController.contains(InstructionCache, nextWord, 0)) {
                 stage.fetch[1] = byteswap(cacheController.read(InstructionCache, nextWord, 0));
+                //stage.fetch[1] = cacheController.read(InstructionCache, nextWord, 0);
             }
             else {
                 cacheController.queueRead(InstructionRead, nextWord, 0);
@@ -199,7 +206,8 @@ void N16R::fetchStage() {
         if (!stage.delayed && (opcode == 007 || opcode == 017)) {
             uint32_t baseI = stage.fetch[0] & 0xfff;
             uint32_t extrI = stage.fetch[1];
-            stage.nextInstructionPointer = stage.instructionPointer & 0xe0000000 | (baseI << 17) | (extrI << 1);
+            stage.altInstructionPointer = stage.instructionPointer & 0xe0000000 | (baseI << 17) | (extrI << 1);
+            stage.nextInstructionPointer = stage.altInstructionPointer;
         }
     }
 
@@ -359,8 +367,8 @@ void N16R::decodeStage() {
 
             case 072: // jalr D
             case 073: // jalr A
-                stage.decode[0] = stage.altInstructionPointer & 0xff;
-                stage.decode[1] = stage.altInstructionPointer >> 16;
+                stage.decode[0] = (stage.instructionPointer + 2) & 0xff;
+                stage.decode[1] = (stage.instructionPointer + 2) >> 16;
                 stage.dstRegs[0] = 016;
                 stage.dstRegs[1] = 017;
             case 070: // jr D
@@ -379,10 +387,11 @@ void N16R::decodeStage() {
                 target |= registerFile[aReg];
 
                 stage.nextInstructionPointer = target;
+                stage.altInstructionPointer = target;
                 stage.srcRegs[0] = aReg;
                 stage.srcRegs[1] = aReg + 1;
 
-                stage.flushOnCommit = true;
+                //stageFlush(1);
 
                 isCustom = true;
                 break;
@@ -438,8 +447,8 @@ void N16R::decodeStage() {
         stage.memoryOp = MemoryNop;
 
         if (opcode == 007) {
-            stage.decode[0] = stage.altInstructionPointer & 0xffff;
-            stage.decode[1] = stage.altInstructionPointer >> 16;
+            stage.decode[0] = (stage.instructionPointer + 4) & 0xffff;
+            stage.decode[1] = (stage.instructionPointer + 4) >> 16;
             stage.dstRegs[0] = 016;
             stage.dstRegs[1] = 017;
             stage.commitOp = CommitWriteBack;
@@ -560,11 +569,8 @@ void N16R::decodeStage() {
     }
     else if (opcode == 006) {
         // B
-        uint32_t offset = stage.fetch[1];
-        if (offset & 0x8000) {
-            offset |= 0xffff0000;
-        }
-        stage.altInstructionPointer = stage.instructionPointer + offset;
+        uint32_t offset = e16s32(stage.fetch[1]);
+        stage.altInstructionPointer = stage.instructionPointer + (offset << 1);
 
         uint8_t aReg = (instruction >> 9) & 07;
         uint8_t bReg = (instruction >> 6) & 07;
@@ -664,11 +670,7 @@ void N16R::executeStage() {
             temp  = ((uint32_t) stage.decode[1] << 16) | stage.decode[0];
 
             if (stage.executeOp == ExecuteAddHalf || stage.executeOp == ExecuteSubtractHalf) {
-                temp0 = stage.decode[2];
-                // we always sign extend this
-                if (temp0 & 0x8000) {
-                    temp0 |= 0xffff0000;
-                }
+                temp0 = e16s32(stage.decode[2]);
             }
             else {
                 temp0 = ((uint32_t) stage.decode[3] << 16) | stage.decode[2];
@@ -714,10 +716,7 @@ void N16R::executeStage() {
             stage.execute[0] = stage.decode[0] << ((stage.decode[2] & 0xf) + 1);
             break;
         case ExecuteRightShiftArithmetic:
-            temp = stage.decode[0];
-            if (temp & 0x8000) {
-                temp |= 0xffff0000;
-            }
+            temp = e16s32(stage.decode[0]);
             stage.execute[0] = (temp >> ((stage.decode[2] & 0xf) + 1)) & 0xffff;
             break;
         case ExecuteRightShift:
@@ -814,7 +813,7 @@ void N16R::writeBackStage() {
 
     auto stage = stageRegisters[4];
 
-    if (hasInterrupts()) {
+    if (hasInterrupts() && (registerFile[statusRegister] & 1)) {
         stage.exception = true;
         stage.exceptionType = ExceptInterrupt;
     }
@@ -832,6 +831,7 @@ void N16R::writeBackStage() {
         uint32_t ipc = registerFile[ipcRegister];
         ipc |= (registerFile[ipcRegister + 1] << 16);
         stage.nextInstructionPointer = ipc;
+        stage.altInstructionPointer = ipc;
         stageRegisters[4] = stage;
 
         uint16_t cause  = registerFile[causeRegister ];
@@ -852,7 +852,7 @@ void N16R::writeBackStage() {
         registerFile[epcRegister    ] = stage.instructionPointer & 0xffff;
         registerFile[epcRegister + 1] = stage.instructionPointer >> 16;
 
-        stageFlush(3);
+        stageFlush(4);
         if (stage.commitOp == CommitWrite) {
             cacheController.invalidateOperation(stage.memory[0]);
         }
@@ -871,8 +871,8 @@ void N16R::writeBackStage() {
 
         if (stage.commitOp == CommitExceptionReturnJump) {
             taken = true;
-            stage.nextInstructionPointer = stage.execute[0];
-            stage.nextInstructionPointer |= (stage.execute[1] << 16);
+            stage.altInstructionPointer = stage.execute[0];
+            stage.altInstructionPointer |= (stage.execute[1] << 16);
         }
     }
     else if (stage.commitOp == CommitJump) {
@@ -943,6 +943,11 @@ void N16R::stageFlush(int until) {
 void N16R::stageShift() {
     auto justRetired = stageRegisters.back();
 
+    if (!justRetired.bubble) {
+        retiredAddresses.push_back(justRetired.instructionPointer);
+        retiredCount++;
+    }
+
     stageRegisters[4].invalidate();
 
     for (int i = stageRegisters.size() - 2; i >= 0; i--) {
@@ -956,13 +961,10 @@ void N16R::stageShift() {
         }
     }
 
-    int inFlight = 0;
     registerHazards.clear();
 
     for (auto stage: stageRegisters) {
         if (!stage.bubble) {
-            inFlight++;
-
             for (int i = 0; i < 5; i++) {
                 if (stage.dstRegs[i] != StageRegister::emptyRegister) {
                     registerHazards.insert(stage.dstRegs[i]);
@@ -973,15 +975,20 @@ void N16R::stageShift() {
 
     if (stageRegisters[0].bubble || justRetired.exception) {
         StageRegister nextStart;
-        auto lastFetched = stageRegisters[1];
 
         if (justRetired.exception || justRetired.taken) {
-            nextStart.instructionPointer = justRetired.nextInstructionPointer;
+            nextStart.instructionPointer = justRetired.altInstructionPointer;
         }
         else {
-            nextStart.instructionPointer = lastFetched.nextInstructionPointer;
+            for (auto stage: stageRegisters) {
+                if (!stage.bubble) {
+                    nextStart.instructionPointer = stage.nextInstructionPointer;
+                    break;
+                }
+            }
         }
         nextStart.nextInstructionPointer = nextStart.instructionPointer;
+        nextStart.altInstructionPointer  = 0xdeadbeef;
         nextStart.bubble = false;
 
         stageRegisters[0] = nextStart;
@@ -1099,8 +1106,29 @@ std::string N16R::command(std::stringstream &input) {
             response << std::endl;
         }
     }
-    else if (commandWord == "memory") {
+    else if (commandWord == "memio") {
         response << cacheController.describeQueuedOperations() << std::endl;
+    }
+    else if (commandWord == "cache") {
+        response << cacheController.listContents(input);
+    }
+    else if (commandWord == "trace") {
+        int width = 0;
+        for (auto address: retiredAddresses) {
+            response << std::setw(8) << std::setfill('0') << std::hex << address;
+            if (++width > 8) {
+                response << std::endl;
+                width = 0;
+            }
+            else {
+                response << "  ";
+            }
+        }
+        if (width != 0) {
+            response << std::endl;
+        }
+
+        response << std::dec << "c: " << clockCount << ", r: " << retiredCount << ", ipc: " << ((float) retiredCount / (float) clockCount) << std::endl;
     }
 
     response << "Ok.";
@@ -1131,6 +1159,10 @@ void N16R::reset() {
     registerFile[041] = 0;
     //executionBuffer.reset();
     busUnit.reset();
+
+    retiredAddresses.clear();
+    clockCount = 0;
+    retiredCount = 0;
 }
 
 bool N16R::breakpointHit() {

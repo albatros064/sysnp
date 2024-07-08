@@ -29,7 +29,7 @@ m_kernel_exception_memory:
     jal driver_serial_init
 
     ; set the command interpreter's stack pointer
-    adr $0, $1, 0xfcffff
+    adr $0, $1, 0x3ffffe
     mov $45, $40
     mov $46, $40
 

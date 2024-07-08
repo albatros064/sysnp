@@ -4,6 +4,7 @@
 #include "../nbus.h"
 #include "cache.h"
 #include "busunit.h"
+#include <boost/circular_buffer.hpp>
 #include <set>
 
 namespace sysnp {
@@ -170,6 +171,10 @@ class N16R : public NBusDevice {
         uint32_t lastBreakpoint;
         bool breakpointWasHit;
         std::set<uint32_t> breakpoints;
+
+        boost::circular_buffer<uint32_t> retiredAddresses;
+        uint64_t clockCount;
+        uint64_t retiredCount;
 };
 
 }; // namespace n16r

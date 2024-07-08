@@ -155,9 +155,11 @@ class CacheController {
         void ingestWord(uint16_t);
 
         std::string describeQueuedOperations();
+        std::string listContents(std::stringstream &);
     private:
         std::vector<MemoryOperation> queuedOperations;
         MemoryOperation pendingOperation;
+        MemoryOperation lastUncachedRead;
         std::map<CacheType, Cache> caches;
         //CacheMode cacheMode;
 

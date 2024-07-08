@@ -14,7 +14,7 @@ monitor_enter:
     j _monitor_echo_loop
     
 sz_monitor_welcome_message:
-    .stringz "*\nWelcome!\n"
+    .stringz "Welcome!\n"
 sz_monitor_prompt:
     .stringz "> "
 

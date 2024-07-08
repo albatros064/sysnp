@@ -195,10 +195,10 @@ void Machine::run() {
 
                 runMode = RunMode::FreeRunMode;
 
-                int clockRate = 0;
+                int maxCycles = 0;
 
                 try {
-                    clockRate = std::stoi(commandWord);
+                    maxCycles = std::stoi(commandWord);
                 }
                 catch (std::invalid_argument e) {}
 
@@ -206,7 +206,7 @@ void Machine::run() {
                 if (runThread.joinable()) {
                     runThread.join();
                 }
-                runThread = std::thread(machineRun, std::ref(*this), clockRate);
+                runThread = std::thread(machineRun, std::ref(*this), maxCycles);
             }
             else if (command == "bus") {
                 std::cout << bus->command(cs) << std::endl;
@@ -241,10 +241,35 @@ void Machine::run() {
                 auto device = getDevice("n16r");
                 std::stringstream a("status");
                 std::stringstream b("pipeline");
-                std::stringstream c("memory");
+                std::stringstream c("memio");
                 std::cout << device->command(a) << std::endl;
                 std::cout << device->command(b) << std::endl;
                 std::cout << device->command(c) << std::endl;
+            }
+            else if (command == "t") {
+                auto device = getDevice("n16r");
+                std::stringstream a("trace");
+                std::stringstream b("pipeline");
+                std::cout << device->command(a) << std::endl;
+                std::cout << device->command(b) << std::endl;
+            }
+            else if (command == "m") {
+                auto device1 = getDevice("memory");
+                auto device2 = getDevice("n16r");
+                std::stringstream a;
+                std::stringstream b;
+
+                cs >> commandWord;
+                a << " " << commandWord;
+                b << "cache " << commandWord;
+
+                commandWord = "";
+                cs >> commandWord;
+                a << " " << commandWord;
+                b << " " << commandWord;
+
+                std::cout << "M:" << std::endl << device1->command(a) << std::endl;
+                std::cout << "C:" << std::endl << device2->command(b) << std::endl;
             }
         }
         else if (runMode == RunMode::FreeRunMode) {
@@ -260,7 +285,7 @@ void Machine::run() {
     debug("Exiting");
 }
 
-void Machine::startRunning(int clockRate) {
+void Machine::startRunning(int maxCycles) {
     std::shared_ptr<nbus::NBus> bus = std::static_pointer_cast<nbus::NBus>(getDevice("nbus"));
     std::shared_ptr<nbus::n16r::N16R> cpu = std::static_pointer_cast<nbus::n16r::N16R>(getDevice("n16r"));
 
@@ -273,6 +298,10 @@ void Machine::startRunning(int clockRate) {
         runCycles++;
 
         if (cpu->breakpointHit()) {
+            clockRunning = false;
+        }
+
+        if (maxCycles > 0 && runCycles >= maxCycles) {
             clockRunning = false;
         }
     }
@@ -302,8 +331,8 @@ void Machine::stopRunning() {
     }
 }
 
-void machineRun(Machine& machine, int clockRate) {
-    machine.startRunning(clockRate);
+void machineRun(Machine& machine, int maxCycles) {
+    machine.startRunning(maxCycles);
 }
 
 }; // namespace

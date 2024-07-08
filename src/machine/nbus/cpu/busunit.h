@@ -10,11 +10,11 @@ namespace nbus {
 namespace n16r {
 
 struct BusOperation {
-    uint32_t address;
-    bool isRead;
+    uint32_t address = 0;
+    bool isRead = true;
     std::vector<uint16_t> data;
     int bytes = 0;
-    bool isValid;
+    bool isValid = true;
 };
 
 enum BusPhase {
