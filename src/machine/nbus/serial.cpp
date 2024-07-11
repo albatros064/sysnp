@@ -173,14 +173,14 @@ void Serial::clockDown() {
             readLatch  = read;
             writeLatch = write;
 
-            if (addressLatch == ioAddress) {
-                if (readLatch) {
-                    machine->debug("Serial - reading");
-                    status = SerialStatus::SerialReadLatency;
-                }
-                else if (writeLatch) {
+            if (addressLatch == ioAddress && readLatch) {
+                if (writeLatch) {
                     machine->debug("Serial - writing");
                     status = SerialStatus::SerialWriteLatency;
+                }
+                else {
+                    machine->debug("Serial - reading");
+                    status = SerialStatus::SerialReadLatency;
                 }
             }
         }

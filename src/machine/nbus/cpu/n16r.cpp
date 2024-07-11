@@ -101,7 +101,7 @@ void N16R::clockUp() {
     if (busUnit.isIdle()) {
         if (cacheController.isOperationPrepared()) {
             machine->debug("Queueing operation");
-            busUnit.queueOperation(cacheController.getOperation().asBusOperation());
+            busUnit.queueOperation(cacheController.getBusOperation());
         }
     }
     busUnit.clockUp();
@@ -138,6 +138,8 @@ void N16R::fetchStage() {
 
     StageRegister stage = stageRegisters[0];
 
+    uint32_t asid = 0;
+
     if (breakpoints.contains(stage.instructionPointer)) {
         if (stage.instructionPointer != lastBreakpoint) {
             lastBreakpoint = stage.instructionPointer;
@@ -157,25 +159,23 @@ void N16R::fetchStage() {
     if (stage.delayed && stage.instructionPointer != stage.nextInstructionPointer) {
         machine->debug("Fetch pre-delayed");
 
-        if (cacheController.contains(InstructionCache, nextWord, 0)) {
-            stage.fetch[1] = byteswap(cacheController.read(InstructionCache, nextWord, 0));
-            //stage.fetch[1] = cacheController.read(InstructionCache, nextWord, 0);
+        if (cacheController.contains(InstructionCache, nextWord, 2, asid) != CacheContainsNone) {
+            stage.fetch[1] = byteswap(cacheController.read(InstructionCache, nextWord, 2, asid));
             stage.delayed = false;
         }
         else {
-            cacheController.queueRead(InstructionRead, nextWord, 0);
+            cacheController.queueRead(InstructionRead, nextWord, 2, asid);
             stage.delayed = true;
         }
     }
-    else if (cacheController.contains(InstructionCache, stage.instructionPointer, 0)) {
+    else if (cacheController.contains(InstructionCache, stage.instructionPointer, 2, asid) != CacheContainsNone) {
         machine->debug("Fetch found");
-        stage.fetch[0] = byteswap(cacheController.read(InstructionCache, stage.instructionPointer, 0));
-        //stage.fetch[0] = cacheController.read(InstructionCache, stage.instructionPointer, 0);
+        stage.fetch[0] = byteswap(cacheController.read(InstructionCache, stage.instructionPointer, 2, asid));
         stage.delayed = false;
     }
     else if (!stage.delayed) {
         machine->debug("Fetch queued");
-        cacheController.queueRead(InstructionRead, stage.instructionPointer, 0);
+        cacheController.queueRead(InstructionRead, stage.instructionPointer, 2, asid);
         stage.delayed = true;
     }
     else {
@@ -189,12 +189,11 @@ void N16R::fetchStage() {
             stage.nextInstructionPointer = stage.instructionPointer + 4;
             stage.altInstructionPointer = stage.nextInstructionPointer;
 
-            if (cacheController.contains(InstructionCache, nextWord, 0)) {
-                stage.fetch[1] = byteswap(cacheController.read(InstructionCache, nextWord, 0));
-                //stage.fetch[1] = cacheController.read(InstructionCache, nextWord, 0);
+            if (cacheController.contains(InstructionCache, nextWord, 2, asid) != CacheContainsNone) {
+                stage.fetch[1] = byteswap(cacheController.read(InstructionCache, nextWord, 2, asid));
             }
             else {
-                cacheController.queueRead(InstructionRead, nextWord, 0);
+                cacheController.queueRead(InstructionRead, nextWord, 2, asid);
                 stage.delayed = true;
             }
         }
@@ -547,15 +546,24 @@ void N16R::decodeStage() {
         stage.executeOp = ExecuteAddHalf;
 
         switch (func) {
+            case 2: // ld
+                aReg <<= 1;
+                stage.dstRegs[6] = aReg + 1;
             case 0: // lb
             case 1: // lw
-                stage.memoryOp = func == 0 ? MemoryReadByte : MemoryReadWord;
+                stage.memoryOp = MemoryRead;
+                stage.memoryBytes = func == 0 ? 1 : (func == 1 ? 2 : 4);
                 stage.commitOp = CommitWriteBack;
-                stage.dstRegs[4] = aReg;
+                stage.dstRegs[5] = aReg;
                 break;
-            case 2: // sb
-            case 3: // sw
-                stage.memoryOp = func == 2 ? MemoryWriteByte : MemoryWriteWord;
+            case 6: // sd
+                aReg <<= 1;
+                stage.decode[4] = registerFile[aReg + 1];
+                stage.srcRegs[4] = aReg + 1;
+            case 4: // sb
+            case 5: // sw
+                stage.memoryOp = MemoryWrite;
+                stage.memoryBytes = func == 4 ? 1 : (func == 5 ? 2 : 4);
                 stage.commitOp = CommitWrite;
                 stage.decode[3] = registerFile[aReg];
                 stage.srcRegs[3] = aReg;
@@ -623,7 +631,7 @@ void N16R::decodeStage() {
 
     stage.delayed = false;
     // Check register hazards
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 5; i++) {
         if (stage.srcRegs[i] == StageRegister::emptyRegister) {
             continue;
         }
@@ -767,39 +775,57 @@ void N16R::memoryStage() {
 
     uint32_t asid = ((uint32_t) registerFile[asidRegister + 1] << 16) | registerFile[asidRegister];
     uint32_t memoryAddress = ((uint32_t) stage.execute[1] << 16) | stage.execute[0];
-    uint32_t wordAddress = memoryAddress & 0xfffffffe;
-    uint16_t memoryValue = stage.decode[3];
 
-    if (stage.memoryOp == MemoryReadByte || stage.memoryOp == MemoryReadWord) {
-        if (cacheController.contains(DataCache, wordAddress, asid)) {
-            memoryValue = cacheController.read(DataCache, wordAddress, asid);
-            if (stage.memoryOp == MemoryReadByte) {
-                if (memoryAddress & 1) {
-                    memoryValue >>= 8;
-                }
-                else {
-                    memoryValue &= 0xff;
-                }
+    if (stage.memoryOp == MemoryRead) {
+        CacheCheck cacheCheck = cacheController.contains(DataCache, memoryAddress, stage.memoryBytes, asid);
+        if (cacheCheck == CacheContainsNone || cacheCheck == CacheContainsPartial) {
+            cacheController.queueRead(DataRead, memoryAddress, stage.memoryBytes, asid);
+            if (cacheCheck == CacheContainsPartial) {
+                stage.memory[0] = 1;
             }
-            stage.memory[0] = memoryValue;
-            stage.delayed = false;
+            stage.delayed = true;
         }
         else {
-            cacheController.queueRead(DataRead, wordAddress, asid);
-            stage.delayed = true;
+            if ((cacheCheck == CacheContainsSplit && stage.memory[0] > 0) || cacheCheck == CacheContainsSingle) {
+                uint32_t memoryValue = cacheController.read(DataCache, memoryAddress, stage.memoryBytes, asid);
+
+                if (stage.memoryBytes == 1) {
+                    stage.memory[0] = memoryValue & 0xff;
+                }
+                else {
+                    stage.memory[0] = memoryValue & 0xffff;
+                    if (stage.memoryBytes > 2) {
+                        stage.memory[1] = memoryValue >> 16;
+                    }
+                }
+
+                stage.delayed = false;
+            }
+            else {
+                // we delay one clock to access the additional cache line
+                stage.memory[0] = 1;
+                stage.delayed = true;
+            }
         }
     }
     else {
+        uint16_t memoryValue0 = stage.decode[3];
+        uint16_t memoryValue1 = stage.decode[4];
+
         MemoryOperation writeOp;
         writeOp.address = memoryAddress;
         writeOp.asid = asid;
         writeOp.type = MemoryOperationDataWrite;
 
-        writeOp.data.push_back(memoryValue & 0xff);
-        writeOp.bytes = 1;
-        if (stage.memoryOp == MemoryWriteWord) {
-            writeOp.bytes++;
-            writeOp.data.push_back(memoryValue >> 8);
+        writeOp.data.push_back(memoryValue0 & 0xff);
+        writeOp.bytes = stage.memoryBytes;
+        if (stage.memoryBytes > 1) {
+            writeOp.data.push_back(memoryValue0 >> 8);
+
+            if (stage.memoryBytes > 2) {
+                writeOp.data.push_back(memoryValue1 & 0xff);
+                writeOp.data.push_back(memoryValue1 >> 8);
+            }
         }
         uint16_t pendingOpId = cacheController.queueOperation(writeOp);
         if (pendingOpId == MemoryOperation::invalidOperationId) {
@@ -888,15 +914,17 @@ void N16R::writeBackStage() {
         taken = true;
     }
     else if (stage.commitOp == CommitWriteBack) {
-        for (int i = 0; i < 4; i++) {
+        int i = 0;
+        for (; i < 5; i++) {
             if (stage.dstRegs[i] != StageRegister::emptyRegister) {
                 registerFile[stage.dstRegs[i]] = stage.execute[i];
             }
         }
-        if (stage.dstRegs[4] != StageRegister::emptyRegister) {
-            registerFile[stage.dstRegs[4]] = stage.memory[0];
+        for (; i < 7; i++) {
+            if (stage.dstRegs[i] != StageRegister::emptyRegister) {
+                registerFile[stage.dstRegs[i]] = stage.memory[i - 5];
+            }
         }
-
     }
     else if (stage.commitOp == CommitWrite) {
         cacheController.commitOperation(stage.memory[0]);
@@ -1052,7 +1080,7 @@ std::string N16R::command(std::stringstream &input) {
         }
     }
     else if (commandWord == "pipeline") {
-        response << "IP         NXIP       ALIP       PDBET   INST EXTR  X  M  C   D0   D1   D2   D3    X0   X1   X2   X3    M0" << std::endl;
+        response << "IP         NXIP       ALIP       PDBET   INST EXTR  X  M  C   D0   D1   D2   D3   D4    X0   X1   X2   X3   X4    M0   M1" << std::endl;
         int sr = 0;
         for (auto iter = stageRegisters.cbegin(); iter != stageRegisters.cend(); iter++, sr++) {
             response << std::setw(8) << std::setfill('0') << std::hex << iter->instructionPointer << "   ";
@@ -1086,7 +1114,7 @@ std::string N16R::command(std::stringstream &input) {
                 response << "         ";
             }
 
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 5; i++) {
                 if (sr > 1) {
                     response << " " << std::setw(4) << std::setfill('0') << std::hex << iter->decode[i];
                 }
@@ -1095,7 +1123,7 @@ std::string N16R::command(std::stringstream &input) {
                 }
             }
             response << " ";
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 5; i++) {
                 if (sr > 2) {
                     response << " " << std::setw(4) << std::setfill('0') << std::hex << iter->execute[i];
                 }
@@ -1103,11 +1131,13 @@ std::string N16R::command(std::stringstream &input) {
                     response << "     ";
                 }
             }
-            if (sr > 3) {
-                response << "  " << std::setw(4) << std::setfill('0') << std::hex << iter->memory[0];
-            }
-            else {
-                response << "     ";
+            for (int i = 0 ; i < 2; i++) {
+                if (sr > 3) {
+                    response << "  " << std::setw(4) << std::setfill('0') << std::hex << iter->memory[i];
+                }
+                else {
+                    response << "     ";
+                }
             }
 
             if (iter->exception) {
@@ -1205,12 +1235,12 @@ void StageRegister::invalidate() {
     bubble = true;
     exception = false;
     delayed = false;
-    fetch[0] = fetch[1] = memory[0] = 0;
-    for (int i = 0; i < 4; i++) {
+    fetch[0] = fetch[1] = memory[0] = memory[1] = 0;
+    for (int i = 0; i < 5; i++) {
         decode[i] = execute[i] = 0;
         srcRegs[i] = emptyRegister;
     }
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < 7; i++) {
         dstRegs[i] = emptyRegister;
     }
 }
@@ -1220,17 +1250,17 @@ OperandHazard StageRegister::checkOperandHazard(uint8_t reg, uint8_t stage) {
         return OperandHazardNone;
     }
     if (stage == 2) {
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 5; i++) {
             if (reg == dstRegs[i]) {
                 return OperandHazardCurrent;
             }
         }
-        if (dstRegs[4] == reg) {
+        if (reg == dstRegs[5] || reg == dstRegs[6]) {
             return OperandHazardNext;
         }
     }
     else if (stage >= 3) {
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 7; i++) {
             if (reg == dstRegs[i]) {
                 return delayed ? OperandHazardNext : OperandHazardCurrent;
             }
@@ -1240,13 +1270,18 @@ OperandHazard StageRegister::checkOperandHazard(uint8_t reg, uint8_t stage) {
     return OperandHazardNone;
 }
 uint16_t StageRegister::operandForward(uint8_t reg, uint8_t stage) {
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 5; i++) {
         if (reg == dstRegs[i]) {
             return execute[i];
         }
     }
-    if (stage >= 3 && reg == dstRegs[4]) {
-        return memory[0];
+    if (stage >= 3) {
+        if (reg == dstRegs[5]) {
+            return memory[0];
+        }
+        if (reg == dstRegs[6]) {
+            return memory[1];
+        }
     }
 
     return 0;

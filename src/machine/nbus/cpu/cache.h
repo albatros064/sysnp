@@ -13,6 +13,35 @@ namespace nbus {
 
 namespace n16r {
 
+enum CacheType {
+    InstructionCache,
+    DataCache,
+    UnifiedL2Cache
+};
+
+enum CacheMode {
+    WriteThroughCache,
+    WriteBackCache
+};
+
+enum CacheCheck {
+    CacheContainsNone,
+    CacheContainsSingle,
+    CacheContainsSplit,
+    CacheContainsPartial
+};
+
+enum MemoryReadType {
+    InstructionRead,
+    DataRead
+};
+
+enum MemoryOperationType {
+    MemoryOperationInstructionRead,
+    MemoryOperationDataRead,
+    MemoryOperationDataWrite
+};
+
 class CacheLine {
     public:
         CacheLine();
@@ -20,7 +49,7 @@ class CacheLine {
         virtual ~CacheLine() {}
 
         bool contains(uint32_t, uint32_t);
-        std::vector<uint8_t> read(uint32_t, uint32_t, int);
+        std::vector<uint8_t> read(uint32_t, int, uint32_t);
         uint32_t getFlags();
 
         void load(uint32_t, uint32_t, uint32_t, std::vector<uint8_t>);
@@ -48,7 +77,7 @@ class CacheBin {
         virtual ~CacheBin() {}
 
         bool contains(uint32_t, uint32_t);
-        std::vector<uint8_t> read(uint32_t, uint32_t, int);
+        std::vector<uint8_t> read(uint32_t, int, uint32_t);
 
         void invalidate(uint32_t, uint32_t);
 
@@ -64,12 +93,11 @@ class Cache {
         Cache(int, int, int, int);
         virtual ~Cache() {}
 
-        bool contains(uint32_t, uint32_t);
+        CacheCheck contains(uint32_t, int, uint32_t);
         uint8_t  readByte (uint32_t, uint32_t);
         uint16_t readWord (uint32_t, uint32_t);
         uint32_t readDword(uint32_t, uint32_t);
-
-        //uint32_t read(uint32_t, uint32_t, int);
+        uint32_t read(uint32_t, int, uint32_t);
 
         void invalidate(uint32_t, uint32_t);
 
@@ -87,30 +115,6 @@ class Cache {
         uint32_t lineMask;
 
         std::vector<CacheBin> bins;
-
-        uint32_t read(uint32_t, uint32_t, int);
-};
-
-enum CacheType {
-    InstructionCache,
-    DataCache,
-    UnifiedL2Cache
-};
-
-enum CacheMode {
-    WriteThroughCache,
-    WriteBackCache
-};
-
-enum MemoryReadType {
-    InstructionRead,
-    DataRead
-};
-
-enum MemoryOperationType {
-    MemoryOperationInstructionRead,
-    MemoryOperationDataRead,
-    MemoryOperationDataWrite
 };
 
 struct MemoryOperation {
@@ -139,12 +143,10 @@ class CacheController {
         void setCache(CacheType, int, int, int, int);
         void addNoCacheRegion(uint32_t, uint32_t);
 
-        //void setCacheMode(CacheMode);
+        CacheCheck contains(CacheType, uint32_t, int, uint32_t);
+        uint32_t read(CacheType, uint32_t, int, uint32_t);
 
-        bool contains(CacheType, uint32_t, uint32_t);
-        uint16_t read(CacheType, uint32_t, uint32_t);
-
-        uint16_t queueRead(MemoryReadType, uint32_t, uint32_t);
+        uint16_t queueRead(MemoryReadType, uint32_t, int, uint32_t);
 
         uint16_t queueOperation     (MemoryOperation);
         void     commitOperation    (uint16_t);
@@ -152,6 +154,7 @@ class CacheController {
 
         bool isOperationPrepared();
         MemoryOperation getOperation();
+        BusOperation getBusOperation();
         void ingestWord(uint16_t);
 
         std::string describeQueuedOperations();
@@ -168,6 +171,8 @@ class CacheController {
         bool canCache(uint32_t);
 
         uint16_t isReadQueued(MemoryReadType, uint32_t, uint32_t);
+
+        void applyWrite(MemoryOperation);
 };
 
 }; // namespace n16r

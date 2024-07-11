@@ -30,13 +30,16 @@ void BusUnit::clockUp() {
             bool upperByte = currentOperation.address & 1;
             interface->assertSignal(NBusSignal::Address, currentOperation.address & 0xfffffe);
 
-            if (currentOperation.isRead) {
-                uint8_t readSignal = 0b01;
-                if (currentOperation.bytes > 2) {
-                    readSignal = 0b11;
-                }
-                interface->assertSignal(NBusSignal::ReadEnable, readSignal);
+            uint8_t readSignal = 0b01; // single
+            if (currentOperation.bytes == 4) {
+                readSignal = 0b10; // burst 2
+            }
+            else if (currentOperation.bytes > 4) {
+                readSignal = 0b11; // burst 8
+            }
+            interface->assertSignal(NBusSignal::ReadEnable, readSignal);
 
+            if (currentOperation.isRead) {
                 phase = BusPhase::BusRead;
             }
             else {
@@ -69,7 +72,7 @@ void BusUnit::clockDown() {
     interruptState = interrupts;
 
     notReady = interface->senseSignal(NBusSignal::NotReady) > 0;
-    uint16_t data = (uint16_t) (interface->senseSignal(NBusSignal::Data    ) & 0xffff);
+    uint16_t data = (uint16_t) (interface->senseSignal(NBusSignal::Data) & 0xffff);
 
     switch (phase) {
         case BusPhase::BusRead:
@@ -92,6 +95,10 @@ void BusUnit::clockDown() {
 
             break;
         case BusPhase::BusWriteWait:
+            if (notReady) {
+                break;
+            }
+
             phase = BusPhase::BusIdle;
 
             break;

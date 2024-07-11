@@ -53,10 +53,14 @@ enum ExecuteOp {
 enum MemoryOp {
     MemoryNop,
 
+    MemoryRead,
+    MemoryWrite,
     MemoryReadByte,
     MemoryReadWord,
+    MemoryReadDword,
     MemoryWriteByte,
-    MemoryWriteWord
+    MemoryWriteWord,
+    MemoryWriteDword
 };
 enum CommitOp {
     CommitNop,
@@ -95,15 +99,17 @@ class StageRegister {
         uint32_t altInstructionPointer;
 
         uint16_t fetch  [2];
-        uint16_t decode [4];
-        uint16_t execute[4];
-        uint16_t memory [1];
-        uint8_t  srcRegs[4];
-        uint8_t  dstRegs[5];
+        uint16_t decode [5];
+        uint16_t execute[5];
+        uint16_t memory [2];
+        uint8_t  srcRegs[5];
+        uint8_t  dstRegs[7];
 
         ExecuteOp executeOp;
         MemoryOp  memoryOp;
         CommitOp  commitOp;
+
+        uint8_t memoryBytes;
 
         bool executeCanOverflow;
 

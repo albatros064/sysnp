@@ -60,13 +60,6 @@ void Memory::clockUp() {
                 uint16_t data = selectedModule->read(addressLatch++);
                 data |= selectedModule->read(addressLatch++) << 8;
                 interface->assertSignal(NBusSignal::Data, data);
-                readLatch--;
-
-                machine->debug("Memory - " + std::to_string(readLatch) + " remain");
-
-                if (readLatch <= 0) {
-                    status = MemoryStatus::Cleanup;
-                }
             }
             else if (status == MemoryStatus::WriteLatency) {
                 if (writeLatch & 1) {
@@ -75,6 +68,13 @@ void Memory::clockUp() {
                 if (writeLatch & 2) {
                     selectedModule->write(addressLatch + 1, (dataLatch >> 8) & 0xff);
                 }
+            }
+
+            readLatch--;
+
+            machine->debug("Memory - " + std::to_string(readLatch) + " remain");
+
+            if (readLatch <= 0) {
                 status = MemoryStatus::Cleanup;
             }
         }
@@ -116,22 +116,26 @@ void Memory::clockDown() {
                         selectedModule = module;
                         latency = 0;
                         if (readLatch) {
-                            if (readLatch > 1) {
-                                readLatch = 8; // batch read is 16 bytes
-                                machine->debug("Memory - burst read");
+                            if (writeLatch) {
+                                status = MemoryStatus::WriteLatency;
+                                latency = module->getWriteLatency();
                             }
                             else {
-                                machine->debug("Memory - single read");
+                                status = MemoryStatus::ReadLatency;
+                                latency = module->getReadLatency();
                             }
-                            status = MemoryStatus::ReadLatency;
-                            latency = module->getReadLatency();
-                        }
-                        else if (writeLatch) {
-                            status = MemoryStatus::WriteLatency;
-                            latency = module->getWriteLatency();
-                        }
-                        else {
-                            latency = 0;
+
+                            if (readLatch == 2) {
+                                readLatch = 2; // batch op of 4 bytes
+                                machine->debug("Memory - burst op 2");
+                            }
+                            else if (readLatch == 3) {
+                                readLatch = 8; // batch op of 16 bytes
+                                machine->debug("Memory - burst op 8");
+                            }
+                            else {
+                                machine->debug("Memory - single op");
+                            }
                         }
                         break;
                     }
