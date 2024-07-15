@@ -44,107 +44,92 @@ void Memory::init(const libconfig::Setting &setting) {
 }
 
 void Memory::postInit() {
-    status = MemoryStatus::Ready;
+    phase = BusPhase::BusIdle;
+    holdup = 0;
 }
 
 void Memory::clockUp() {
     machine->debug("Memory::clockUp()");
-    if (status != MemoryStatus::Ready && status != MemoryStatus::Cleanup) {
-        if (latency > 0) {
-            interface->assertSignal(NBusSignal::NotReady, 1);
-            --latency;
-        }
-        else {
-            interface->deassertSignal(NBusSignal::NotReady);
-            if (status == MemoryStatus::ReadLatency) {
-                uint16_t data = selectedModule->read(addressLatch++);
-                data |= selectedModule->read(addressLatch++) << 8;
-                interface->assertSignal(NBusSignal::Data, data);
+
+    switch (phase) {
+        case BusPhase::BusActive:
+            if (selectedModule && !writeLatch) {
+                dataLatch = selectedModule->read(addressLatch);
+                dataLatch |= selectedModule->read(addressLatch + 1) << 8;
+                interface->assertSignal(NBusSignal::Data, dataLatch);
             }
-            else if (status == MemoryStatus::WriteLatency) {
-                if (writeLatch & 1) {
-                    selectedModule->write(addressLatch, dataLatch & 0xff);
-                }
-                if (writeLatch & 2) {
-                    selectedModule->write(addressLatch + 1, (dataLatch >> 8) & 0xff);
-                }
-            }
-
-            readLatch--;
-
-            machine->debug("Memory - " + std::to_string(readLatch) + " remain");
-
-            if (readLatch <= 0) {
-                status = MemoryStatus::Cleanup;
-            }
-        }
-    }
-    else if (status == MemoryStatus::Cleanup) {
-        interface->deassertSignal(NBusSignal::Data);
-        interface->deassertSignal(NBusSignal::NotReady);
-
-        status = MemoryStatus::Ready;
+            break;
+        default:
+            interface->deassertSignal(NBusSignal::Data);
+            break;
     }
 }
 
 void Memory::clockDown() {
     machine->debug("Memory::clockDown()");
 
-    uint32_t read  = interface->senseSignal(NBusSignal::ReadEnable);
-    uint32_t write = interface->senseSignal(NBusSignal::WriteEnable);
+    uint32_t read    = interface->senseSignal(NBusSignal::ReadEnable);
+    uint32_t write   = interface->senseSignal(NBusSignal::WriteEnable);
+    uint32_t address = interface->senseSignal(NBusSignal::Address);
+    uint32_t data    = interface->senseSignal(NBusSignal::Data);
 
-    // Are we in a position to respond to bus activity?
-    if (status == MemoryStatus::Ready) {
-        machine->debug("Latching bus lines");
-        if (read || write) {
-            machine->debug("Read or write requested");
-            addressLatch = interface->senseSignal(NBusSignal::Address) & 0xffffffffe;
-            dataLatch    = interface->senseSignal(NBusSignal::Data   );
-            readLatch = read;
-            writeLatch = write;
-
-            std::stringstream str;
-            str << " -Request address: " << std::setw(8) << std::setfill('0') << std::hex << addressLatch;
-
-            machine->debug(str.str());
-
-            if (addressLatch < ioHoleAddress || addressLatch >= (ioHoleAddress + ioHoleSize)) {
-                machine->debug("Memory - not in io hole");
+    switch (phase) {
+        case BusPhase::BusWait:
+            if (holdup <= 0) {
+                phase = BusPhase::BusActive;
+                addressLatch = address;
+                readLatch = read;
+                writeLatch = write;
                 for (auto module: modules) {
                     if (module->containsAddress(addressLatch)) {
-                        machine->debug("Memory - handled by module " + module->getName());
                         selectedModule = module;
-                        latency = 0;
-                        if (readLatch) {
-                            if (writeLatch) {
-                                status = MemoryStatus::WriteLatency;
-                                latency = module->getWriteLatency();
-                            }
-                            else {
-                                status = MemoryStatus::ReadLatency;
-                                latency = module->getReadLatency();
-                            }
-
-                            if (readLatch == 2) {
-                                readLatch = 2; // batch op of 4 bytes
-                                machine->debug("Memory - burst op 2");
-                            }
-                            else if (readLatch == 3) {
-                                readLatch = 8; // batch op of 16 bytes
-                                machine->debug("Memory - burst op 8");
-                            }
-                            else {
-                                machine->debug("Memory - single op");
-                            }
-                        }
                         break;
                     }
                 }
             }
             else {
-                machine->debug("Memory - address in io hole. Skipping");
+                holdup--;
             }
-        }
+            break;
+        case BusPhase::BusActive:
+            for (auto module: modules) {
+                if (module->containsAddress(addressLatch)) {
+                    selectedModule = module;
+                    if (writeLatch & 1) {
+                        selectedModule->write(addressLatch, data & 0xff);
+                    }
+                    if (writeLatch & 2) {
+                        selectedModule->write(addressLatch + 1, data >> 8);
+                    }
+                    break;
+                }
+            }
+            addressLatch = address;
+            if (!read) {
+                phase = BusPhase::BusCleanup;
+            }
+            break;
+        case BusPhase::BusBegin:
+            if (!read) {
+                phase = BusPhase::BusCleanup;
+            }
+            break;
+        case BusPhase::BusCleanup:
+            phase = BusPhase::BusIdle;
+            break;
+        case BusPhase::BusIdle:
+        default:
+            if (read) {
+                if (address < ioHoleAddress || address >= (ioHoleAddress + ioHoleSize)) {
+                    // We are selected
+                    phase = BusPhase::BusWait;
+                }
+                else {
+                    // We are not selected
+                    phase = BusPhase::BusBegin;
+                }
+            }
+            break;
     }
 }
 

@@ -214,12 +214,12 @@ formats = (
     {
         name = "E";
         width = 16;
-        fragments = [ "opcode", "dreg0", "sreg4", "rreg", "function3"];
+        fragments = [ "opcode", "dreg0", "dreg4", "sreg4", "rreg", "function3"];
     },
     {
         name = "M";
         width = 32;
-        fragments = [ "opcode", "dreg0", "sreg4", "function", "i16" ];
+        fragments = [ "opcode", "dreg0", "dreg4", "sreg4", "function", "i16" ];
     },
     {
         name = "J";

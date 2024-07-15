@@ -12,13 +12,6 @@ namespace sysnp {
 
 namespace nbus {
 
-enum SerialStatus {
-    SerialReady,
-    SerialReadLatency,
-    SerialWriteLatency,
-    SerialCleanup
-};
-
 class Serial : public NBusDevice {
     public:
         Serial() {}
@@ -33,10 +26,12 @@ class Serial : public NBusDevice {
         virtual std::string command(std::stringstream &);
     private:
         uint32_t ioAddress;
-        SerialStatus status;
+        BusPhase phase;
         std::string ttyFile;
 
         NBusSignal interrupt;
+
+        int holdup;
 
         uint32_t dataLatch;
         uint32_t addressLatch;

@@ -17,6 +17,8 @@ void BusUnit::reset() {
     currentOperation = op;
     notReady = false;
     interruptState = 0;
+    addressCounter = 0;
+    dataCounter = 0;
 }
 
 void BusUnit::clockUp() {
@@ -25,36 +27,35 @@ void BusUnit::clockUp() {
     interface->deassertSignal(NBusSignal::WriteEnable);
     interface->deassertSignal(NBusSignal::ReadEnable);
 
-    if (phase == BusPhase::BusIdle) {
-        if (currentOperation.isValid) {
-            bool upperByte = currentOperation.address & 1;
-            interface->assertSignal(NBusSignal::Address, currentOperation.address & 0xfffffe);
-
-            uint8_t readSignal = 0b01; // single
-            if (currentOperation.bytes == 4) {
-                readSignal = 0b10; // burst 2
+    switch (phase) {
+        case BusPhase::BusBegin:
+        case BusPhase::BusWait:
+            interface->assertSignal(NBusSignal::Address, (currentOperation.address + addressCounter) & 0xfffffe);
+            interface->assertSignal(NBusSignal::ReadEnable, readMode);
+            interface->assertSignal(NBusSignal::WriteEnable, writeMode);
+            if (!currentOperation.isRead) {
+                interface->assertSignal(NBusSignal::Data, currentOperation.data[dataCounter]);
             }
-            else if (currentOperation.bytes > 4) {
-                readSignal = 0b11; // burst 8
+            break;
+        case BusPhase::BusActive:
+            if (!currentOperation.isRead) {
+                interface->assertSignal(NBusSignal::Data, currentOperation.data[dataCounter]);
             }
-            interface->assertSignal(NBusSignal::ReadEnable, readSignal);
-
-            if (currentOperation.isRead) {
-                phase = BusPhase::BusRead;
+            interface->assertSignal(NBusSignal::Address, (currentOperation.address + addressCounter) & 0xfffffe);
+            interface->assertSignal(NBusSignal::ReadEnable, readMode);
+            interface->assertSignal(NBusSignal::WriteEnable, writeMode);
+            break;
+        case BusPhase::BusCleanup:
+            if (!currentOperation.isRead) {
+                interface->assertSignal(NBusSignal::Data, currentOperation.data[dataCounter]);
             }
-            else {
-                uint8_t writeMode = 0b11;
-                if (currentOperation.bytes == 1) {
-                    writeMode = upperByte ? 0b10 : 0b01;
-                }
-                interface->assertSignal(NBusSignal::WriteEnable, writeMode);
-                interface->assertSignal(NBusSignal::Data, currentOperation.data[0]);
-
-                phase = BusPhase::BusWrite;
-            }
-        }
+            break;
+        case BusPhase::BusIdle:
+        default:
+            break;
     }
 }
+
 void BusUnit::clockDown() {
     uint8_t interrupts = 0;
     if (interface->senseSignal(NBusSignal::Interrupt0)) {
@@ -75,35 +76,64 @@ void BusUnit::clockDown() {
     uint16_t data = (uint16_t) (interface->senseSignal(NBusSignal::Data) & 0xffff);
 
     switch (phase) {
-        case BusPhase::BusRead:
-            phase = BusPhase::BusReadWait;
+        case BusPhase::BusBegin:
+            phase = BusPhase::BusWait;
             break;
-        case BusPhase::BusReadWait:
+        case BusPhase::BusWait:
+            if (!notReady) {
+                phase = BusPhase::BusActive;
+                addressCounter += 2;
+                currentOperation.bytes -= 2;
+                if (!currentOperation.isRead) {
+                    dataCounter += 1;
+                    if (currentOperation.bytes <= 0) {
+                        phase = BusPhase::BusCleanup;
+                    }
+                }
+            }
+            break;
+        case BusPhase::BusActive:
             if (notReady) {
+                phase = BusPhase::BusWait;
                 break;
             }
 
-            currentOperation.data.push_back(data);
+            addressCounter += 2;
+            dataCounter    += 1;
+
+            if (currentOperation.isRead) {
+                currentOperation.data.push_back(data);
+            }
+
             currentOperation.bytes -= 2;
             if (currentOperation.bytes <= 0) {
-                phase = BusPhase::BusIdle;
+                phase = BusPhase::BusCleanup;
             }
-
             break;
-        case BusPhase::BusWrite:
-            phase = BusPhase::BusWriteWait;
-
-            break;
-        case BusPhase::BusWriteWait:
-            if (notReady) {
-                break;
+        case BusPhase::BusCleanup:
+            if (currentOperation.isRead) {
+                currentOperation.data.push_back(data);
             }
 
             phase = BusPhase::BusIdle;
-
             break;
         case BusPhase::BusIdle:
         default:
+            if (currentOperation.isValid && currentOperation.bytes > 0) {
+                phase = BusPhase::BusBegin;
+                addressCounter = 0;
+                dataCounter = -1;
+                readMode = currentOperation.bytes > 2 ? 0b10 : 0b01;
+                if (currentOperation.isRead) {
+                    writeMode = 0b00;
+                }
+                else if (currentOperation.bytes == 1) {
+                    writeMode = (currentOperation.address & 1) ? 0b10 : 0b01;
+                }
+                else {
+                    writeMode = 0b11;
+                }
+            }
             break;
     }
 }
@@ -122,7 +152,7 @@ uint16_t BusUnit::getWord() {
         word = currentOperation.data[0];
         currentOperation.data.erase(currentOperation.data.begin());
 
-        if (currentOperation.data.size() <= 0 && currentOperation.bytes <= 0) {
+        if (currentOperation.data.size() <= 0 && currentOperation.bytes < 0) {
             currentOperation.isValid = false;
         }
     }

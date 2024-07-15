@@ -17,14 +17,6 @@ struct BusOperation {
     bool isValid = true;
 };
 
-enum BusPhase {
-    BusIdle,
-    BusRead,
-    BusReadWait,
-    BusWrite,
-    BusWriteWait
-};
-
 class BusUnit {
     public:
         void setBusInterface(std::shared_ptr<NBusInterface>);
@@ -44,6 +36,10 @@ class BusUnit {
 
         BusPhase phase;
         bool notReady;
+        int addressCounter;
+        int dataCounter;
+        int readMode;
+        int writeMode;
 
         BusOperation currentOperation;
 

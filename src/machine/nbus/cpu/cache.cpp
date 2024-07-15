@@ -244,29 +244,64 @@ int Cache::getLineBytes() {
     return 1 << lineBits;
 }
 
-BusOperation MemoryOperation::asBusOperation() {
+BusOperation MemoryOperation::getBusOperation() {
     BusOperation op;
     op.address = address;
     op.isValid = true;
     op.isRead = type != MemoryOperationDataWrite;
     op.bytes = bytes;
 
-    if (data.size() > 0) {
-        if (bytes == 1) {
-            if (address & 1) {
-                op.data.push_back(data[0] << 8);
-            }
-            else {
-                op.data.push_back(data[0]);
+    bool hasData = data.size() > 0;
+
+    uint16_t word;
+
+    if ((address & 1) || (bytes & 1)) {
+        // we're misaligned somehow. split into multiple
+        // bus operations
+        if (address & 1) {
+            // we are byte aligned. chip off one
+            // byte and send it
+            op.bytes = 1;
+            address = address & 0xfffffffe;
+
+            if (hasData) {
+                word = ((uint16_t) data.front()) << 8;
             }
         }
         else {
+            // we are word aligned.
+            op.bytes = bytes > 1 ? 2 : 1;
+            if (hasData) {
+                word = data.front();
+            }
+
+            if (op.bytes == 2) {
+                if (hasData) {
+                    data.erase(data.begin());
+                    word |= ((uint16_t) data.front()) << 8;
+                }
+                address += 2;
+            }
+        }
+        bytes -= op.bytes;
+
+        if (hasData) {
+            data.erase(data.begin());
+            op.data.push_back(word);
+        }
+    }
+    else {
+        // we're aligned and a multiple of 2.
+        // just word-ify it, and send it on its way
+        if (hasData) {
             for (int i = 0; i < data.size(); i += 2) {
-                uint16_t word = data[i];
+                word = data[i];
                 word |= ((uint16_t) data[i + 1]) << 8;
                 op.data.push_back(word);
             }
         }
+
+        bytes = 0;
     }
 
     return op;
@@ -420,19 +455,28 @@ BusOperation CacheController::getBusOperation() {
     for (int i = queuedOperations.size() - 1; i >= 0; --i) {
         if (queuedOperations[i].isReady()) {
             auto op = queuedOperations[i];
-            queuedOperations.erase(queuedOperations.begin() + i);
+
             if (op.type == MemoryOperationDataWrite) {
                 applyWrite(op);
             }
             else {
                 pendingOperation = op;
             }
-            return op.asBusOperation();
+
+            BusOperation busOp = op.getBusOperation();
+
+            if (!op.isValid()) {
+                queuedOperations.erase(std::next(queuedOperations.begin(), i));
+            }
+            else {
+                queuedOperations[i] = op;
+            }
+            return busOp;
         }
     }
 
-    MemoryOperation dummy;
-    return dummy.asBusOperation();
+    BusOperation busOp;
+    return busOp;
 }
 
 void CacheController::applyWrite(MemoryOperation op) {
@@ -445,6 +489,7 @@ void CacheController::applyWrite(MemoryOperation op) {
 
 void CacheController::ingestWord(uint16_t word) {
     if (!pendingOperation.isValid()) {
+std::cout << "pending invalid" << std::endl;
         // should we error? not sure.
         return;
     }

@@ -557,6 +557,7 @@ void N16R::decodeStage() {
                 stage.dstRegs[5] = aReg;
                 break;
             case 6: // sd
+std::cout << "sd" << std::endl;
                 aReg <<= 1;
                 stage.decode[4] = registerFile[aReg + 1];
                 stage.srcRegs[4] = aReg + 1;
@@ -625,6 +626,7 @@ void N16R::decodeStage() {
 
     if (stage.exception && stage.exceptionType == ExceptNone) {
         stage.exceptionType = ExceptInvalidInstruction;
+std::cout << "invalid" << std::endl;
     }
 
     stage.privileged = isPrivileged;
@@ -1131,9 +1133,10 @@ std::string N16R::command(std::stringstream &input) {
                     response << "     ";
                 }
             }
+            response << " ";
             for (int i = 0 ; i < 2; i++) {
                 if (sr > 3) {
-                    response << "  " << std::setw(4) << std::setfill('0') << std::hex << iter->memory[i];
+                    response << " " << std::setw(4) << std::setfill('0') << std::hex << iter->memory[i];
                 }
                 else {
                     response << "     ";

@@ -133,7 +133,7 @@ struct MemoryOperation {
     bool isReady() { return bytes > 0 && committed; }
     void invalidate() { bytes = 0; committed = false; }
 
-    BusOperation asBusOperation();
+    BusOperation getBusOperation();
 
     const static uint16_t invalidOperationId = 0xffff;
 };

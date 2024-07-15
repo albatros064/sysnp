@@ -10,13 +10,6 @@ namespace sysnp {
 
 namespace nbus {
 
-enum MemoryStatus {
-    Ready,
-    ReadLatency,
-    WriteLatency,
-    Cleanup
-};
-
 class MemoryModule;
 
 class Memory : public NBusDevice {
@@ -38,8 +31,8 @@ class Memory : public NBusDevice {
         uint32_t ioHoleAddress;
         uint32_t ioHoleSize;
 
-        MemoryStatus status;
-        uint8_t latency;
+        BusPhase phase;
+        int holdup;
 
         uint32_t dataLatch;
         uint32_t addressLatch;

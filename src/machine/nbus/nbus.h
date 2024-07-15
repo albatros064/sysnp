@@ -27,6 +27,14 @@ enum NBusSignal {
     NotReady,
 };
 
+enum BusPhase {
+    BusIdle,
+    BusBegin,
+    BusWait,
+    BusActive,
+    BusCleanup
+};
+
 class NBusInterface;
 
 class NBus : public Device , public std::enable_shared_from_this<NBus>  {

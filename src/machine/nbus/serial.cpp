@@ -47,6 +47,8 @@ void Serial::init(const libconfig::Setting &setting) {
 
     lastOutData = false;
     hasOutData = false;
+    holdup = 0;
+    phase = BusPhase::BusIdle;
 }
 
 void Serial::postInit() {
@@ -110,46 +112,34 @@ void Serial::postInit() {
 void Serial::clockUp() {
     machine->debug("Serial::clockUp()");
 
-    if (status != SerialStatus::SerialReady && status != SerialStatus::SerialCleanup) {
-        if (status == SerialStatus::SerialReadLatency) {
-            machine->debug(6, "Serial::clockUp() SerialReadLatency");
+    switch (phase) {
+        case BusPhase::BusActive:
+            if (!writeLatch) {
+                machine->debug(6, "Serial::clockUp() SerialReadLatency");
 
-            uint16_t data = 0;
+                uint16_t data = 0;
 
-            inDataMutex.lock();
+                inDataMutex.lock();
 
-            if (hasInData) {
-                machine->debug(6, "Serial::clockUp() - found data");
-                data = inData;
-                data |= 0x100;
+                if (hasInData) {
+                    machine->debug(6, "Serial::clockUp() - found data");
+                    data = inData;
+                    data |= 0x100;
+                }
+                if (hasOutData) {
+                    data |= 0x200;
+                }
+
+                interface->assertSignal(NBusSignal::Data, data);
+                interface->deassertSignal(interrupt);
+                hasInData = false;
+
+                inDataMutex.unlock();
             }
-            if (hasOutData) {
-                data |= 0x200;
-            }
-
-            interface->assertSignal(NBusSignal::Data, data);
-            interface->deassertSignal(interrupt);
-            hasInData = false;
-
-            inDataMutex.unlock();
-        }
-        else if (status == SerialStatus::SerialWriteLatency) {
-            machine->debug(6, "Serial::clockUp() SerialWriteLatency");
-            if (writeLatch & 1) {
-                outDataMutex.lock();
-
-                outData = (uint8_t) dataLatch & 0xff;
-                hasOutData = true;
-
-                outDataMutex.unlock();
-            }
-        }
-        status = SerialStatus::SerialCleanup;
-    }
-    else if (status == SerialStatus::SerialCleanup) {
-        machine->debug(6, "Serial::clockUp() SerialCleanup");
-        interface->deassertSignal(NBusSignal::Data);
-        status = SerialStatus::SerialReady;
+            break;
+        default:
+            interface->deassertSignal(NBusSignal::Data);
+            break;
     }
 
     if (hasInData || (lastOutData != hasOutData)) {
@@ -162,28 +152,59 @@ void Serial::clockUp() {
 void Serial::clockDown() {
     machine->debug("Serial::clockDown()");
 
-    uint32_t read  = interface->senseSignal(NBusSignal::ReadEnable);
-    uint32_t write = interface->senseSignal(NBusSignal::WriteEnable);
+    uint32_t read    = interface->senseSignal(NBusSignal::ReadEnable);
+    uint32_t write   = interface->senseSignal(NBusSignal::WriteEnable);
+    uint32_t address = interface->senseSignal(NBusSignal::Address);
+    uint32_t data    = interface->senseSignal(NBusSignal::Data);
 
-    if (status == SerialStatus::SerialReady) {
-        machine->debug("Latching bus lines");
-        if (read || write) {
-            addressLatch = interface->senseSignal(NBusSignal::Address) & 0xfffffffe;
-            dataLatch    = interface->senseSignal(NBusSignal::Data   );
-            readLatch  = read;
-            writeLatch = write;
+    switch (phase) {
+        case BusPhase::BusWait:
+            if (holdup <= 0) {
+                phase = BusPhase::BusActive;
+                addressLatch = address;
+                readLatch = read;
+                writeLatch = write;
+            }
+            else {
+                holdup--;
+            }
+            break;
+        case BusPhase::BusActive:
+            if (writeLatch & 1) {
+                outDataMutex.lock();
 
-            if (addressLatch == ioAddress && readLatch) {
-                if (writeLatch) {
-                    machine->debug("Serial - writing");
-                    status = SerialStatus::SerialWriteLatency;
+                outData = (uint8_t) data & 0xff;
+                hasOutData = true;
+
+                outDataMutex.unlock();
+            }
+
+            addressLatch = address;
+            if (!read) {
+                phase = BusPhase::BusCleanup;
+            }
+            break;
+        case BusPhase::BusBegin:
+            if (!read) {
+                phase = BusPhase::BusCleanup;
+            }
+            break;
+        case BusPhase::BusCleanup:
+            phase = BusPhase::BusIdle;
+            break;
+        case BusPhase::BusIdle:
+        default:
+            if (read) {
+                if (address == ioAddress) {
+                    // We are selected
+                    phase = BusPhase::BusWait;
                 }
                 else {
-                    machine->debug("Serial - reading");
-                    status = SerialStatus::SerialReadLatency;
+                    // We are not selected
+                    phase = BusPhase::BusBegin;
                 }
             }
-        }
+            break;
     }
 }
 
