@@ -262,7 +262,7 @@ BusOperation MemoryOperation::getBusOperation() {
             // we are byte aligned. chip off one
             // byte and send it
             op.bytes = 1;
-            address = address & 0xfffffffe;
+            address = (address & 0xfffffffe) + 2;
 
             if (hasData) {
                 word = ((uint16_t) data.front()) << 8;
