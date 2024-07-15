@@ -87,6 +87,12 @@ enum OperandHazard {
     OperandHazardNext
 };
 
+enum CanOverflow {
+    CanNotOverflow,
+    CanOverflow16,
+    CanOverflow32
+};
+
 class StageRegister {
     public:
         StageRegister();
@@ -111,7 +117,7 @@ class StageRegister {
 
         uint8_t memoryBytes;
 
-        bool executeCanOverflow;
+        CanOverflow executeCanOverflow;
 
         bool flushOnCommit;
 

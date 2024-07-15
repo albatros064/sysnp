@@ -227,6 +227,7 @@ void N16R::decodeStage() {
 
     stage.commitOp = CommitNop;
     stage.executeOp = ExecuteNop;
+    stage.executeCanOverflow = CanNotOverflow;
 
     auto instruction = stage.fetch[0];
     uint8_t opcode = (instruction >> 12) & 0xf;
@@ -243,7 +244,6 @@ void N16R::decodeStage() {
         uint8_t bReg = (instruction >> 6) & 07;
         uint8_t func = instruction & 077;
 
-        stage.executeCanOverflow = false;
         stage.commitOp = CommitWriteBack;
 
         stage.exceptionType = ExceptNone;
@@ -272,23 +272,23 @@ void N16R::decodeStage() {
                 break;
 
             case 010: // add.16
-                stage.executeCanOverflow = true;
+                stage.executeCanOverflow = CanOverflow16;
             case 011: // addu.16
                 stage.executeOp = ExecuteAdd;
                 break;
             case 012: // sub.16
-                stage.executeCanOverflow = true;
+                stage.executeCanOverflow = CanOverflow16;
             case 013: // subu.16
                 stage.executeOp = ExecuteSubtract;
                 break;
             case 014: // add.32
-                stage.executeCanOverflow = true;
+                stage.executeCanOverflow = CanOverflow32;
             case 015: // addu.32
                 stage.executeOp = ExecuteAdd;
                 isDouble = true;
                 break;
             case 016: // sub.32
-                stage.executeCanOverflow = true;
+                stage.executeCanOverflow = CanOverflow32;
             case 017: // subu.32
                 stage.executeOp = ExecuteSubtract;
                 isDouble = true;
@@ -468,7 +468,7 @@ void N16R::decodeStage() {
         stage.decode[2] = imm;
 
         switch (opcode) {
-            case 001:
+            case 001: // addiu, subiu
                 aReg <<= 1;
                 stage.srcRegs[0] = aReg;
                 stage.srcRegs[1] = aReg + 1;
@@ -479,15 +479,17 @@ void N16R::decodeStage() {
 
                 stage.executeOp = func ? ExecuteSubtractHalf : ExecuteAddHalf;
                 break;
-            case 010:
+            case 010: // addiu
                 stage.executeOp = ExecuteAddHalf;
                 if (!func) {
+                    stage.executeCanOverflow = CanOverflow16;
                     signExtend = true;
                 }
                 break;
-            case 011:
+            case 011: // subiu
                 stage.executeOp = ExecuteSubtractHalf;
                 if (!func) {
+                    stage.executeCanOverflow = CanOverflow16;
                     signExtend = true;
                 }
                 break;
@@ -679,6 +681,9 @@ void N16R::executeStage() {
     uint32_t temp;
     uint32_t temp0;
 
+    bool aPos, bPos, cPos;
+    uint32_t signCheck;
+
     switch (stage.executeOp) {
         case ExecuteSetLessThan:
         case ExecuteSubtract:
@@ -694,6 +699,20 @@ void N16R::executeStage() {
                 temp0 = ((uint32_t) stage.decode[3] << 16) | stage.decode[2];
             }
 
+            if (stage.executeCanOverflow == CanOverflow32) {
+                signCheck = 0x80000000;
+            }
+            else if (stage.executeCanOverflow == CanOverflow16) {
+                signCheck = 0x8000;
+            }
+            else {
+                // this makes all the xPos variables become true
+                signCheck = 0x0;
+            }
+
+            aPos = (temp  & signCheck) == 0;
+            bPos = (temp0 & signCheck) == 0;
+
             if (stage.executeOp != ExecuteAdd && stage.executeOp != ExecuteAddHalf) {
                 temp0 = ~temp0 + 1;
             }
@@ -703,12 +722,21 @@ void N16R::executeStage() {
                 stage.execute[0] = (temp & 0x80000000) ? 1 : 0;
             }
             else {
-                stage.execute[0] = temp & 0xffff;
-                stage.execute[1] = temp >> 16;
+                stage.execute[0] = (temp      ) & 0xffff;
+                stage.execute[1] = (temp >> 16) & 0xffff;
             }
 
-            if (stage.executeCanOverflow) {
-                //
+            cPos = (temp & signCheck) == 0;
+
+            // An overflow occurs only if we switched signs
+            if (aPos != cPos) {
+                if (
+                    (bPos == aPos && (stage.executeOp == ExecuteAdd || stage.executeOp == ExecuteAddHalf)) ||
+                    (bPos != aPos &&  stage.executeOp != ExecuteAdd && stage.executeOp != ExecuteAddHalf)
+                ) {
+                    stage.exception = true;
+                    stage.exceptionType = ExceptOverflow;
+                }
             }
             
             break;
