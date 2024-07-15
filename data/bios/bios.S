@@ -48,26 +48,15 @@ exception_handler:
     adr  $0, $1, m_kernel_exception_memory
     xch  $45, $40
     ; store first-tier registers so we have breathing room
-    sw   $0, 20($45) ; store stack pointer
-    sw   $1, 22($45) ; .
-    mov  $40, $44
-    sw   $0, 16($45) ; store global pointer
-    sw   $1, 18($45) ; .
-    mov  $40, $46
-    sw   $0, 24($45) ; store frame pointer
-    sw   $1, 26($45) ; .
-    mov  $40, $47
-    sw   $0, 28($45) ; store return address
-    sw   $1, 30($45) ; .
+    sd   $40, 20($45) ; store $sp
+    sd   $44, 16($45) ; store $gp
+    sd   $46, 24($45) ; store $fp
+    sd   $47, 28($45) ; store $ra
     mov  $40, $50
-    sw   $0,  0($45)
-    sw   $1,  2($45)
-    sw   $2,  4($45)
-    sw   $3,  6($45)
-    sw   $4,  8($45)
-    sw   $5, 10($45)
-    sw   $6, 12($45)
-    sw   $7, 14($45)
+    sd   $40,  0($45)
+    sd   $41,  4($45)
+    sd   $42,  8($45)
+    sd   $43, 12($45)
 
     mov  $0,  $20   ; grab cause
     andi $0,  0x3c  ;  isolate exception
@@ -100,31 +89,20 @@ exception_handler:
 exception_handler_exit:
     ; restore $2 and $3 if we don't care about
     ; return values
-    lw  $2, 4($45)
-    lw  $3, 6($45)
+    ld  $41, 4($45)
 exception_handler_final:
     ; restore most top-level registers
-    lw  $0, 28($45) ; pull $ra from memory
-    lw  $1, 30($45) ; .
+    ld  $40, 28($45) ; pull $ra from memory
     mov $57, $40    ; stash $ra for later
-    lw  $0, 20($45) ; pull $sp from memory
-    lw  $1, 22($45) ; .
-    mov $50, $40    ; stash $sp for later
-    lw  $0, 16($45) ; restore $gp
-    lw  $1, 18($45) ; .
-    mov $44, $40    ; .
-    lw  $0, 24($45) ; restore $fp
-    lw  $1, 26($45) ; .
-    mov $46, $40    ; .
-    lw  $0, 0($45)  ; restore $0
-    lw  $1, 2($45)  ; restore $1
-    ;w  $2, 4($45)  ; restore $2 (handled above)
-    ;w  $3, 6($45)  ; restore $3 (handled above)
-    lw  $4, 8($45)  ; restore $4
-    lw  $5, 10($45) ; restore $5
-    lw  $6, 12($45) ; restore $6
-    lw  $7, 14($45) ; restore $7
-    mov $45, $50    ; finally put $sp back in place
+
+    ld  $40,  0($45) ; restore $0/$1
+    ;d  $41,  4($45) ; restore $2/$3 (above)
+    ld  $42,  8($45) ; restore $4/$5
+    ld  $43, 12($45) ; restore $6/$7
+
+    ld  $44, 16($45) ; restore $gp
+    ld  $46, 24($45) ; restore $fp
+    ld  $45, 20($45) ; restore $sp
     
     mov $47, $67 ; grab epc
     xch $47, $57 ; put $ra back, set up return jump

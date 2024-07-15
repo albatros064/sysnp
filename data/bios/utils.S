@@ -2,11 +2,9 @@
 .segment ktext
 
 print_string:
-    subiu $45, 4    ; allocate space for $47
+    subiu $45, 4    ; push $ra
+    sd $47, -4($45) ; .
     mov $43, $40    ; 
-    mov $40, $47
-    sw  $0, -4($45)
-    sw  $1, -2($45)
   _print_string_loop:
     lb  $0, 0($43)
     xor $4, $4
@@ -15,10 +13,8 @@ print_string:
     addiu $43, 1
     j   _print_string_loop
   _print_string_exit:
-    lw  $0, -4($45)
-    lw  $1, -2($45)
-    addiu $45, 4
-    xch $40, $47
+    ld  $47, -4($45) ; pop $ra
+    addiu $45, 4     ; .
     jr  $47
     
 

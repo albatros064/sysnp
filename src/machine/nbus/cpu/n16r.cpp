@@ -557,7 +557,6 @@ void N16R::decodeStage() {
                 stage.dstRegs[5] = aReg;
                 break;
             case 6: // sd
-std::cout << "sd" << std::endl;
                 aReg <<= 1;
                 stage.decode[4] = registerFile[aReg + 1];
                 stage.srcRegs[4] = aReg + 1;
