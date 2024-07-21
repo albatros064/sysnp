@@ -2,8 +2,9 @@ target_sources(libsysnp
     PRIVATE
         n16r.cpp
         busunit.cpp
-        cache.cpp
+        memoryUnit.cpp
         n16r.h
         busunit.h
+        memoryUnit.h
         cache.h
 )

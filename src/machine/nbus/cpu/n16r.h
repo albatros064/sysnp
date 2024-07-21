@@ -2,8 +2,8 @@
 #define SYSNP_N16R_H
 
 #include "../nbus.h"
-#include "cache.h"
 #include "busunit.h"
+#include "memoryUnit.h"
 #include <boost/circular_buffer.hpp>
 #include <set>
 
@@ -175,9 +175,8 @@ class N16R : public NBusDevice {
         void stageShift();
         void stageClearOut();
 
-        CacheController cacheController;
-
-        BusUnit busUnit;
+        MemoryUnit memoryUnit;
+        BusUnit    busUnit;
 
         uint32_t resetAddress;
         bool isPipelined;

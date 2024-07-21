@@ -47,7 +47,7 @@ void N16R::init(const libconfig::Setting &setting) {
         cRegion.lookupValue("size", size);
 
         if (start >= 0) {
-            cacheController.addNoCacheRegion(start, size);
+            memoryUnit.addNoCacheRegion(start, size);
         }
     }
 
@@ -62,7 +62,7 @@ void N16R::init(const libconfig::Setting &setting) {
         cCache.lookupValue("binBits", binBits);
         cCache.lookupValue("lineBits", lineBits);
         cCache.lookupValue("ways", ways);
-        cacheController.setCache(
+        memoryUnit.setCache(
             type == "data" ? DataCache : InstructionCache,
             32, // address bits
             binBits,
@@ -99,9 +99,9 @@ void N16R::clockUp() {
     machine->debug("Processing bus unit");
 
     if (busUnit.isIdle()) {
-        if (cacheController.isOperationPrepared()) {
+        if (memoryUnit.isOperationPrepared()) {
             machine->debug("Queueing operation");
-            busUnit.queueOperation(cacheController.getBusOperation());
+            busUnit.queueOperation(memoryUnit.getBusOperation());
         }
     }
     busUnit.clockUp();
@@ -120,7 +120,7 @@ void N16R::clockDown() {
     busUnit.clockDown();
 
     if (busUnit.hasData()) {
-        cacheController.ingestWord(busUnit.getWord());
+        memoryUnit.ingestWord(busUnit.getWord());
     }
 
     uint16_t pendingInterrupts = busUnit.hasInterrupt();
@@ -159,23 +159,23 @@ void N16R::fetchStage() {
     if (stage.delayed && stage.instructionPointer != stage.nextInstructionPointer) {
         machine->debug("Fetch pre-delayed");
 
-        if (cacheController.contains(InstructionCache, nextWord, 2, asid) != CacheContainsNone) {
-            stage.fetch[1] = byteswap(cacheController.read(InstructionCache, nextWord, 2, asid));
+        if (memoryUnit.contains(InstructionCache, nextWord, 2, asid) != CacheContainsNone) {
+            stage.fetch[1] = byteswap(memoryUnit.read(InstructionCache, nextWord, 2, asid));
             stage.delayed = false;
         }
         else {
-            cacheController.queueRead(InstructionRead, nextWord, 2, asid);
+            memoryUnit.queueRead(InstructionRead, nextWord, 2, asid);
             stage.delayed = true;
         }
     }
-    else if (cacheController.contains(InstructionCache, stage.instructionPointer, 2, asid) != CacheContainsNone) {
+    else if (memoryUnit.contains(InstructionCache, stage.instructionPointer, 2, asid) != CacheContainsNone) {
         machine->debug("Fetch found");
-        stage.fetch[0] = byteswap(cacheController.read(InstructionCache, stage.instructionPointer, 2, asid));
+        stage.fetch[0] = byteswap(memoryUnit.read(InstructionCache, stage.instructionPointer, 2, asid));
         stage.delayed = false;
     }
     else if (!stage.delayed) {
         machine->debug("Fetch queued");
-        cacheController.queueRead(InstructionRead, stage.instructionPointer, 2, asid);
+        memoryUnit.queueRead(InstructionRead, stage.instructionPointer, 2, asid);
         stage.delayed = true;
     }
     else {
@@ -189,11 +189,11 @@ void N16R::fetchStage() {
             stage.nextInstructionPointer = stage.instructionPointer + 4;
             stage.altInstructionPointer = stage.nextInstructionPointer;
 
-            if (cacheController.contains(InstructionCache, nextWord, 2, asid) != CacheContainsNone) {
-                stage.fetch[1] = byteswap(cacheController.read(InstructionCache, nextWord, 2, asid));
+            if (memoryUnit.contains(InstructionCache, nextWord, 2, asid) != CacheContainsNone) {
+                stage.fetch[1] = byteswap(memoryUnit.read(InstructionCache, nextWord, 2, asid));
             }
             else {
-                cacheController.queueRead(InstructionRead, nextWord, 2, asid);
+                memoryUnit.queueRead(InstructionRead, nextWord, 2, asid);
                 stage.delayed = true;
             }
         }
@@ -806,9 +806,9 @@ void N16R::memoryStage() {
     uint32_t memoryAddress = ((uint32_t) stage.execute[1] << 16) | stage.execute[0];
 
     if (stage.memoryOp == MemoryRead) {
-        CacheCheck cacheCheck = cacheController.contains(DataCache, memoryAddress, stage.memoryBytes, asid);
+        CacheCheck cacheCheck = memoryUnit.contains(DataCache, memoryAddress, stage.memoryBytes, asid);
         if (cacheCheck == CacheContainsNone || cacheCheck == CacheContainsPartial) {
-            cacheController.queueRead(DataRead, memoryAddress, stage.memoryBytes, asid);
+            memoryUnit.queueRead(DataRead, memoryAddress, stage.memoryBytes, asid);
             if (cacheCheck == CacheContainsPartial) {
                 stage.memory[0] = 1;
             }
@@ -816,7 +816,7 @@ void N16R::memoryStage() {
         }
         else {
             if ((cacheCheck == CacheContainsSplit && stage.memory[0] > 0) || cacheCheck == CacheContainsSingle) {
-                uint32_t memoryValue = cacheController.read(DataCache, memoryAddress, stage.memoryBytes, asid);
+                uint32_t memoryValue = memoryUnit.read(DataCache, memoryAddress, stage.memoryBytes, asid);
 
                 if (stage.memoryBytes == 1) {
                     stage.memory[0] = memoryValue & 0xff;
@@ -856,7 +856,7 @@ void N16R::memoryStage() {
                 writeOp.data.push_back(memoryValue1 >> 8);
             }
         }
-        uint16_t pendingOpId = cacheController.queueOperation(writeOp);
+        uint16_t pendingOpId = memoryUnit.queueOperation(writeOp);
         if (pendingOpId == MemoryOperation::invalidOperationId) {
             stage.delayed = true;
         }
@@ -918,7 +918,7 @@ void N16R::writeBackStage() {
 
         stageFlush(4);
         if (stage.commitOp == CommitWrite) {
-            cacheController.invalidateOperation(stage.memory[0]);
+            memoryUnit.invalidateOperation(stage.memory[0]);
         }
         return;
     }
@@ -956,7 +956,7 @@ void N16R::writeBackStage() {
         }
     }
     else if (stage.commitOp == CommitWrite) {
-        cacheController.commitOperation(stage.memory[0]);
+        memoryUnit.commitOperation(stage.memory[0]);
     }
     else {
         auto checkValue = stage.execute[0];
@@ -1002,7 +1002,7 @@ void N16R::stageFlush(int until) {
     for (int i = 0; i < 5 && i < until; i++) {
         stageRegisters[i].invalidate();
         if (i >= 3 && stageRegisters[i].commitOp == CommitWrite) {
-            cacheController.invalidateOperation(stageRegisters[i].memory[0]);
+            memoryUnit.invalidateOperation(stageRegisters[i].memory[0]);
         }
     }
 }
@@ -1177,10 +1177,10 @@ std::string N16R::command(std::stringstream &input) {
         }
     }
     else if (commandWord == "memio") {
-        response << cacheController.describeQueuedOperations() << std::endl;
+        response << memoryUnit.describeQueuedOperations() << std::endl;
     }
     else if (commandWord == "cache") {
-        response << cacheController.listContents(input);
+        response << memoryUnit.listContents(input);
     }
     else if (commandWord == "trace") {
         int width = 0;
