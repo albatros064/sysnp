@@ -156,58 +156,80 @@ void N16R::fetchStage() {
 
     uint32_t nextWord = stage.instructionPointer + 2;
 
+    uint32_t checkWord = stage.instructionPointer;
+    if (stage.delayed && stage.instructionPointer != stage.nextInstructionPointer) {
+        checkWord = nextWord;
+    }
+
+    auto memCheck = memoryUnit.check(MemoryOpInstructionRead, checkWord, 2, asid);
+    if (memCheck.isException()) {
+        // throw exception
+        stageRegisters[0] = stage;
+        return;
+    }
+
+    bool secondWordFetched = false;
     if (stage.delayed && stage.instructionPointer != stage.nextInstructionPointer) {
         machine->debug("Fetch pre-delayed");
 
-        if (memoryUnit.contains(InstructionCache, nextWord, 2, asid) != CacheContainsNone) {
-            stage.fetch[1] = byteswap(memoryUnit.read(InstructionCache, nextWord, 2, asid));
+        if (memCheck.isComplete()) {
+            stage.fetch[1] = byteswap(memoryUnit.read(InstructionCache, checkWord, 2, asid));
             stage.delayed = false;
+            secondWordFetched = true;
         }
         else {
-            memoryUnit.queueRead(InstructionRead, nextWord, 2, asid);
+            memoryUnit.queueRead(InstructionRead, checkWord, 2, asid);
             stage.delayed = true;
         }
     }
-    else if (memoryUnit.contains(InstructionCache, stage.instructionPointer, 2, asid) != CacheContainsNone) {
-        machine->debug("Fetch found");
-        stage.fetch[0] = byteswap(memoryUnit.read(InstructionCache, stage.instructionPointer, 2, asid));
-        stage.delayed = false;
-    }
-    else if (!stage.delayed) {
-        machine->debug("Fetch queued");
-        memoryUnit.queueRead(InstructionRead, stage.instructionPointer, 2, asid);
-        stage.delayed = true;
-    }
     else {
-        machine->debug("Waiting for instruction data");
+        if (memCheck.isComplete()) {
+            machine->debug("Fetch found");
+            stage.fetch[0] = byteswap(memoryUnit.read(InstructionCache, checkWord, 2, asid));
+            stage.delayed = false;
+        }
+        else if (!stage.delayed) {
+            machine->debug("Fetch queued");
+            memoryUnit.queueRead(InstructionRead, checkWord, 2, asid);
+            stage.delayed = true;
+        }
+        else {
+            machine->debug("Waiting for instruction data");
+        }
     }
 
-    if (!stage.delayed) {
+    if (!stage.delayed && !secondWordFetched) {
         // early-decode
         uint8_t opcode = (stage.fetch[0] >> 12) & 0xf;
         if (opcode == 002 || opcode == 006 || opcode == 007 || opcode == 017) {
             stage.nextInstructionPointer = stage.instructionPointer + 4;
-            stage.altInstructionPointer = stage.nextInstructionPointer;
 
-            if (memoryUnit.contains(InstructionCache, nextWord, 2, asid) != CacheContainsNone) {
+            auto memCheck = memoryUnit.check(MemoryOpInstructionRead, nextWord, 2, asid);
+            if (memCheck.isException()) {
+                // throw exception
+                stageRegisters[0] = stage;
+                return;
+            }
+
+            if (memCheck.isComplete()) {
                 stage.fetch[1] = byteswap(memoryUnit.read(InstructionCache, nextWord, 2, asid));
             }
             else {
                 memoryUnit.queueRead(InstructionRead, nextWord, 2, asid);
                 stage.delayed = true;
             }
+
+            if (opcode == 007 || opcode == 017) {
+                uint32_t baseI = stage.fetch[0] & 0xfff;
+                uint32_t extrI = stage.fetch[1];
+                stage.nextInstructionPointer = stage.instructionPointer & 0xe0000000 | (baseI << 17) | (extrI << 1);
+            }
         }
         else {
             stage.nextInstructionPointer = stage.instructionPointer + 2;
-            stage.altInstructionPointer = stage.nextInstructionPointer;
         }
 
-        if (!stage.delayed && (opcode == 007 || opcode == 017)) {
-            uint32_t baseI = stage.fetch[0] & 0xfff;
-            uint32_t extrI = stage.fetch[1];
-            stage.altInstructionPointer = stage.instructionPointer & 0xe0000000 | (baseI << 17) | (extrI << 1);
-            stage.nextInstructionPointer = stage.altInstructionPointer;
-        }
+        stage.altInstructionPointer = stage.nextInstructionPointer;
     }
 
     stageRegisters[0] = stage;
@@ -805,18 +827,36 @@ void N16R::memoryStage() {
     uint32_t asid = ((uint32_t) registerFile[asidRegister + 1] << 16) | registerFile[asidRegister];
     uint32_t memoryAddress = ((uint32_t) stage.execute[1] << 16) | stage.execute[0];
 
+    uint32_t memoryValue;
+
+    auto opType = stage.memoryOp == MemoryRead ? MemoryOpDataRead : MemoryOpDataWrite;
+    MemoryCheck memCheck = memoryUnit.check(opType, memoryAddress, stage.memoryBytes, asid);
+
+    if (memCheck.isException()) {
+        // throw exception
+        stageRegisters[3] = stage;
+        return;
+    }
+
     if (stage.memoryOp == MemoryRead) {
-        CacheCheck cacheCheck = memoryUnit.contains(DataCache, memoryAddress, stage.memoryBytes, asid);
-        if (cacheCheck == CacheContainsNone || cacheCheck == CacheContainsPartial) {
-            memoryUnit.queueRead(DataRead, memoryAddress, stage.memoryBytes, asid);
-            if (cacheCheck == CacheContainsPartial) {
+        switch (memCheck.result) {
+            case MemoryCheckContainsPartial:
                 stage.memory[0] = 1;
-            }
-            stage.delayed = true;
-        }
-        else {
-            if ((cacheCheck == CacheContainsSplit && stage.memory[0] > 0) || cacheCheck == CacheContainsSingle) {
-                uint32_t memoryValue = memoryUnit.read(DataCache, memoryAddress, stage.memoryBytes, asid);
+                // fall through
+            case MemoryCheckContainsNone:
+                memoryUnit.queueRead(DataRead, memoryAddress, stage.memoryBytes, asid);
+                stage.delayed = true;
+                break;
+            case MemoryCheckContainsSplit:
+                if (stage.memory[0] == 0) {
+                    // we delay one clock to access the additional cache line
+                    stage.memory[0] = 1;
+                    stage.delayed = true;
+                    break;
+                }
+                // else fall through
+            case MemoryCheckContainsSingle:
+                memoryValue = memoryUnit.read(DataCache, memoryAddress, stage.memoryBytes, asid);
 
                 if (stage.memoryBytes == 1) {
                     stage.memory[0] = memoryValue & 0xff;
@@ -829,12 +869,7 @@ void N16R::memoryStage() {
                 }
 
                 stage.delayed = false;
-            }
-            else {
-                // we delay one clock to access the additional cache line
-                stage.memory[0] = 1;
-                stage.delayed = true;
-            }
+                break;
         }
     }
     else {
@@ -844,7 +879,7 @@ void N16R::memoryStage() {
         MemoryOperation writeOp;
         writeOp.address = memoryAddress;
         writeOp.asid = asid;
-        writeOp.type = MemoryOperationDataWrite;
+        writeOp.type = MemoryOpDataWrite;
 
         writeOp.data.push_back(memoryValue0 & 0xff);
         writeOp.bytes = stage.memoryBytes;

@@ -25,24 +25,36 @@ void MemoryUnit::addNoCacheRegion(uint32_t start, uint32_t length) {
     noCacheRegions.push_back(region);
 }
 
-CacheCheck MemoryUnit::contains(CacheType type, uint32_t address, int count, uint32_t asid) {
-    if (!canCache(address)) {
+MemoryCheck MemoryUnit::check(MemoryOpType type, uint32_t address, int count, uint32_t asid) {
+    if (!canCache(address, asid)) {
         if (lastUncachedRead.isValid() && lastUncachedRead.address == (lastUncachedRead.address & address)) {
-            return CacheContainsSingle;
+            return MemoryCheckContainsSingle;
         }
-        return CacheContainsNone;
+        return MemoryCheckContainsNone;
     }
 
-    auto pendingContains = pendingOperation.contains(type, address, count, asid);
+    CacheType cacheType = type == MemoryOpInstructionRead ? InstructionCache : DataCache;
+
+    auto pendingContains = pendingOperation.contains(cacheType, address, count, asid);
     if (pendingContains != CacheContainsNone) {
         return pendingContains;
     }
 
-    if (!caches.contains(type)) {
-        return CacheContainsNone;
+    // Check if it's in the cache
+    CacheCheck cacheResult = CacheContainsNone;
+    if (caches.contains(cacheType)) {
+        cacheResult = caches[cacheType].contains(address, count, asid);
     }
 
-    return caches[type].contains(address, count, asid);
+    // Cache Hit -- return the hit
+    if (cacheResult >= CacheContainsSingle) {
+        return cacheResult;
+    }
+    return cacheResult;
+
+    // Cache Miss -- check TLB
+    // TLB Hit -- no further action necessary
+    // TLB Miss -- check for failed walk result
 }
 
 uint32_t MemoryUnit::read(CacheType type, uint32_t address, int count, uint32_t asid) {
@@ -82,7 +94,7 @@ uint16_t MemoryUnit::queueRead(MemoryReadType type, uint32_t address, int count,
 
     int bytes = count;
     CacheType cacheType = type == InstructionRead ? InstructionCache : DataCache;
-    if (canCache(address) && caches.contains(cacheType)) {
+    if (canCache(address, asid) && caches.contains(cacheType)) {
         address = address & ~caches[cacheType].getLineMask();
         bytes   =            caches[cacheType].getLineBytes();
     }
@@ -91,7 +103,7 @@ uint16_t MemoryUnit::queueRead(MemoryReadType type, uint32_t address, int count,
     operation.address = address;
     operation.asid    = asid;
     operation.bytes   = bytes;
-    operation.type    = type == InstructionRead ? MemoryOperationInstructionRead : MemoryOperationDataRead;
+    operation.type    = type == InstructionRead ? MemoryOpInstructionRead : MemoryOpDataRead;
     operation.committed = true;
 
     return queueOperation(operation);
@@ -128,7 +140,7 @@ void MemoryUnit::commitOperation(uint16_t operationId) {
     for (MemoryOperation& op: queuedOperations) {
         if (op.operationId == operationId && op.isValid()) {
             op.committed = true;
-            if (op.type == MemoryOperationDataWrite) {
+            if (op.type == MemoryOpDataWrite) {
                 applyWrite(op);
             }
             break;
@@ -162,7 +174,7 @@ MemoryOperation MemoryUnit::getOperation() {
         if (queuedOperations[i].isReady()) {
             auto op = queuedOperations[i];
             queuedOperations.erase(queuedOperations.begin() + i);
-            if (op.type == MemoryOperationDataWrite) {
+            if (op.type == MemoryOpDataWrite) {
                 applyWrite(op);
             }
             else {
@@ -181,7 +193,7 @@ BusOperation MemoryUnit::getBusOperation() {
         if (queuedOperations[i].isReady()) {
             auto op = queuedOperations[i];
 
-            if (op.type == MemoryOperationDataWrite) {
+            if (op.type == MemoryOpDataWrite) {
                 applyWrite(op);
             }
             else {
@@ -206,7 +218,7 @@ BusOperation MemoryUnit::getBusOperation() {
 
 void MemoryUnit::applyWrite(MemoryOperation op) {
     for (auto c: {InstructionCache, DataCache, UnifiedL2Cache}) {
-        if (contains(c, op.address, op.data.size(), op.asid) != CacheContainsNone) {
+        if (caches.contains(c) && caches[c].contains(op.address, op.data.size(), op.asid) != CacheContainsNone) {
             caches[c].write(op.address, op.asid, op.data);
         }
     }
@@ -227,8 +239,8 @@ void MemoryUnit::ingestWord(uint16_t word) {
     pending.data.push_back(high);
 
     if (pending.data.size() == pending.bytes) {
-        if (canCache(pending.address)) {
-            CacheType type = pending.type == MemoryOperationInstructionRead ? InstructionCache : DataCache;
+        if (canCache(pending.address, pending.asid)) {
+            CacheType type = pending.type == MemoryOpInstructionRead ? InstructionCache : DataCache;
             caches[type].load(pending.address, pending.asid, 0, pending.data);
         }
         else {
@@ -288,7 +300,7 @@ std::string MemoryUnit::listContents(std::stringstream &input) {
         response << std::setw(8) << std::setfill('0') << std::hex << (location + (i << 3)) << " ";
         for (int b = 0; b < 4; b++) {
             uint32_t address = location + (i << 3) + (b << 1);
-            if (contains(DataCache, address, 2, asid)) {
+            if (caches.contains(DataCache) && caches[DataCache].contains(address, 2, asid)) {
                 uint16_t datum = read(DataCache, address, 2, asid);
                 response << " " << std::setw(2) << std::setfill('0') << std::hex << (datum & 0xff);
                 response << " " << std::setw(2) << std::setfill('0') << std::hex << (datum >> 8);
@@ -302,18 +314,49 @@ std::string MemoryUnit::listContents(std::stringstream &input) {
     return response.str();
 }
 
-bool MemoryUnit::canCache(uint32_t address) {
-    for (auto region: noCacheRegions) {
-        if (region.first <= address && (region.first + region.second) >= address) {
-            return false;
+bool MemoryUnit::canCache(uint32_t address, uint32_t asid) {
+    auto segment = getSegment(address);
+    if (segment == MemorySegmentK1) {
+        // unmapped, uncached
+        return false;
+    }
+    else if (segment == MemorySegmentK0) {
+        // unmapped, cachable
+        address &= 0x1fffffff;
+        for (auto region: noCacheRegions) {
+            if (region.first <= address && (region.first + region.second) >= address) {
+                return false;
+            }
         }
+        return true;
+    }
+
+    // MemorySegmentK2, MemorySegmentU0
+    // mapped, cachable
+    if (tlb.contains(address, 1, asid) != CacheContainsNone) {
+        uint16_t flags = tlb.getFlags(address, asid);
+    }
+    else {
     }
 
     return true;
 }
 
+MemorySegment MemoryUnit::getSegment(uint32_t address) {
+    if (     address >= 0xc0000000) {
+        return MemorySegmentK2;
+    }
+    else if (address >= 0xa0000000) {
+        return MemorySegmentK1;
+    }
+    else if (address >= 0x80000000) {
+        return MemorySegmentK0;
+    }
+    return MemorySegmentU0;
+}
+
 uint16_t MemoryUnit::isReadQueued(MemoryReadType type, uint32_t address, uint32_t asid) {
-    MemoryOperationType opType = type == InstructionRead ? MemoryOperationInstructionRead : MemoryOperationDataRead;
+    MemoryOpType opType = type == InstructionRead ? MemoryOpInstructionRead : MemoryOpDataRead;
     for (auto op: queuedOperations) {
         if (op.type != opType || op.asid != asid) {
             continue;
@@ -337,7 +380,7 @@ BusOperation MemoryOperation::getBusOperation() {
     BusOperation op;
     op.address = address;
     op.isValid = true;
-    op.isRead = type != MemoryOperationDataWrite;
+    op.isRead = type != MemoryOpDataWrite;
     op.bytes = bytes;
 
     bool hasData = data.size() > 0;
@@ -398,13 +441,31 @@ BusOperation MemoryOperation::getBusOperation() {
 
 CacheCheck MemoryOperation::contains(CacheType _type, uint32_t _address, int _count, uint32_t _asid) {
     if (isValid() && _asid == asid) {
-        if (_type == InstructionCache && type == MemoryOperationInstructionRead) {
+        if (_type == InstructionCache && type == MemoryOpInstructionRead) {
         }
-        else if (_type == DataCache && type == MemoryOperationDataRead) {
+        else if (_type == DataCache && type == MemoryOpDataRead) {
             
         }
     }
     return CacheContainsNone;
+}
+
+MemoryCheck::MemoryCheck(CacheCheck check) {
+    switch (check) {
+        case CacheContainsPartial:
+            result = MemoryCheckContainsPartial;
+            break;
+        case CacheContainsSingle:
+            result = MemoryCheckContainsSingle;
+            break;
+        case CacheContainsSplit:
+            result = MemoryCheckContainsSplit;
+            break;
+        case CacheContainsNone:
+        default:
+            result = MemoryCheckContainsNone;
+            break;
+    }
 }
 
 }; // namespace n16r

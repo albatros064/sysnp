@@ -19,6 +19,13 @@ enum CacheType {
     UnifiedL2Cache
 };
 
+enum MemorySegment {
+    MemorySegmentU0,
+    MemorySegmentK0,
+    MemorySegmentK1,
+    MemorySegmentK2
+};
+
 enum CacheMode {
     WriteThroughCache,
     WriteBackCache
@@ -29,10 +36,34 @@ enum MemoryReadType {
     DataRead
 };
 
-enum MemoryOperationType {
-    MemoryOperationInstructionRead,
-    MemoryOperationDataRead,
-    MemoryOperationDataWrite
+enum MemoryOpType {
+    MemoryOpInstructionRead,
+    MemoryOpDataRead,
+    MemoryOpDataWrite
+};
+
+enum MemoryCheckResult {
+    MemoryCheckContainsNone,
+    MemoryCheckContainsPartial,
+    MemoryCheckContainsSingle,
+    MemoryCheckContainsSplit,
+    MemoryCheckNoWrite,
+    MemoryCheckNoRead,
+    MemoryCheckNoExecute,
+    MemoryCheckNoPresent
+};
+
+struct MemoryCheck {
+    MemoryCheck() {}
+    MemoryCheck(MemoryCheckResult _result):result(_result) {}
+    MemoryCheck(CacheCheck);
+    ~MemoryCheck() {}
+
+    MemoryCheckResult result;
+
+    bool isException() { return result >= MemoryCheckNoWrite; }
+    bool isComplete() { return result == MemoryCheckContainsSingle || result == MemoryCheckContainsSplit; }
+    bool isMiss() { return result < MemoryCheckContainsSingle; }
 };
 
 struct MemoryOperation {
@@ -43,7 +74,7 @@ struct MemoryOperation {
     std::vector<uint8_t> data;
     int bytes = 0;
 
-    MemoryOperationType type;
+    MemoryOpType type;
 
     bool committed = false;
 
@@ -65,7 +96,7 @@ class MemoryUnit {
         void setCache(CacheType, int, int, int, int);
         void addNoCacheRegion(uint32_t, uint32_t);
 
-        CacheCheck contains(CacheType, uint32_t, int, uint32_t);
+        MemoryCheck check(MemoryOpType, uint32_t, int, uint32_t);
         uint32_t read(CacheType, uint32_t, int, uint32_t);
 
         uint16_t queueRead(MemoryReadType, uint32_t, int, uint32_t);
@@ -79,6 +110,8 @@ class MemoryUnit {
         BusOperation getBusOperation();
         void ingestWord(uint16_t);
 
+        MemorySegment getSegment(uint32_t);
+
         std::string describeQueuedOperations();
         std::string listContents(std::stringstream &);
     private:
@@ -86,11 +119,11 @@ class MemoryUnit {
         MemoryOperation pendingOperation;
         MemoryOperation lastUncachedRead;
         std::map<CacheType, Cache<uint32_t, uint8_t, uint32_t, uint8_t>> caches;
-        //Cache<uint32_t, uint16_t, uint32_t, uint16_t> tlb;
+        Cache<uint32_t, uint16_t, uint32_t, uint16_t> tlb;
 
         std::vector<std::pair<uint32_t, uint32_t>> noCacheRegions;
 
-        bool canCache(uint32_t);
+        bool canCache(uint32_t, uint32_t);
 
         uint16_t isReadQueued(MemoryReadType, uint32_t, uint32_t);
 

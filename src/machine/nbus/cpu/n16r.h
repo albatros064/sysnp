@@ -122,6 +122,7 @@ class StageRegister {
         bool flushOnCommit;
 
         bool privileged;
+        bool memoryPrivileged;
         bool delayed;
         bool bubble;
         bool taken;

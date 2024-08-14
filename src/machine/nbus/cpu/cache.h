@@ -13,9 +13,9 @@ namespace n16r {
 
 enum CacheCheck {
     CacheContainsNone,
+    CacheContainsPartial,
     CacheContainsSingle,
-    CacheContainsSplit,
-    CacheContainsPartial
+    CacheContainsSplit
 };
 
 template<typename A, typename V, typename M, typename F>
@@ -244,6 +244,18 @@ class Cache {
             }
         }
 
+        F getFlags(A address, M metaValue) {
+            address &= tagMask;
+            int binNum = binNumber(address);
+            for (int i = 0; i < wayCount; i++) {
+                int offset = binNum + i;
+                if (meta[offset] == metaValue && tag[offset] == address) {
+                    return flag[offset];
+                }
+            }
+            return 0;
+        }
+
         A getLineMask() { return lineMask; }
         int getLineBytes() { return contentCount; }
 
@@ -264,6 +276,15 @@ class Cache {
                 }
             }
             return 0;
+        }
+
+        bool lineDirty(A address, int line) {
+            if (dirtyFlag < 0) {
+                return false;
+            }
+
+            int offset = binNumber(address) + line;
+            return (flag[offset] & (1 << dirtyFlag)) > 0;
         }
 
     private:
