@@ -161,6 +161,10 @@ void N16R::fetchStage() {
         checkWord = nextWord;
     }
 
+    if (isKernelSegment(checkWord)) {
+        stage.privileged = true;
+    }
+
     auto memCheck = memoryUnit.check(MemoryOpInstructionRead, checkWord, 2, asid);
     if (memCheck.isException()) {
         // throw exception
@@ -203,6 +207,10 @@ void N16R::fetchStage() {
         uint8_t opcode = (stage.fetch[0] >> 12) & 0xf;
         if (opcode == 002 || opcode == 006 || opcode == 007 || opcode == 017) {
             stage.nextInstructionPointer = stage.instructionPointer + 4;
+
+            if (isKernelSegment(nextWord)) {
+                stage.privileged = true;
+            }
 
             auto memCheck = memoryUnit.check(MemoryOpInstructionRead, nextWord, 2, asid);
             if (memCheck.isException()) {
@@ -649,10 +657,9 @@ void N16R::decodeStage() {
 
     if (stage.exception && stage.exceptionType == ExceptNone) {
         stage.exceptionType = ExceptInvalidInstruction;
-std::cout << "invalid" << std::endl;
     }
 
-    stage.privileged = isPrivileged;
+    stage.privileged = stage.privileged || isPrivileged;
 
     stage.delayed = false;
     // Check register hazards
@@ -877,7 +884,8 @@ void N16R::memoryStage() {
         uint16_t memoryValue1 = stage.decode[4];
 
         MemoryOperation writeOp;
-        writeOp.address = memoryAddress;
+        writeOp.inAddress = memoryAddress;
+        writeOp.outAddress = memoryAddress;
         writeOp.asid = asid;
         writeOp.type = MemoryOpDataWrite;
 
