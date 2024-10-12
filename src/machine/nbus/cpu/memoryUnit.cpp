@@ -9,7 +9,7 @@ namespace nbus {
 
 namespace n16r {
 
-MemoryUnit::MemoryUnit() {}
+MemoryUnit::MemoryUnit():tlb(4, 12, 1, true, -1, 0) {}
 
 void MemoryUnit::setCache(CacheType type, int _addressBits, int _binBits, int _lineBits, int _ways) {
     int _wayBits = 0;
@@ -158,8 +158,8 @@ uint16_t MemoryUnit::queueRead(MemoryReadType type, uint32_t address, int count,
 
     MemoryOperation operation;
     operation.inAddress = address;
-    // need to translate
-    operation.outAddress = address;
+    // we assume that by this point we don't have a TLB miss
+    translateAddress(address, bytes, asid, operation.outAddress, true);
     operation.asid    = asid;
     operation.bytes   = bytes;
     operation.type    = type == InstructionRead ? MemoryOpInstructionRead : MemoryOpDataRead;
@@ -295,15 +295,27 @@ void MemoryUnit::ingestWord(uint16_t word) {
 std::string MemoryUnit::describeQueuedOperations() {
     std::stringstream response;
 
-    response << "C  VADDR     PADDR     T B   BYTES";
+    response << "C  VADDR     PADDR   T B   BYTES";
 
     for (auto iter = queuedOperations.cbegin(); iter != queuedOperations.cend(); iter++) {
         //if (!(iter->isValid())) {
             //continue;
         //}
+        std::string operType;
+        switch (iter->type) {
+            case MemoryOpInstructionRead:
+                operType = "I";
+                break;
+            case MemoryOpDataRead:
+                operType = "R";
+                break;
+            case MemoryOpDataWrite:
+                operType = "W";
+                break;
+        }
         response << std::endl << (iter->committed ? 1 : 0) << "  ";
-        response << std::setw(8) << std::setfill('0') << std::hex << iter->inAddress << "  " << iter->outAddress << "  ";
-        response << iter->type << " " << std::setw(2) << std::dec << iter->bytes << " ";
+        response << std::setw(8) << std::setfill('0') << std::hex << iter->inAddress << "  " << std::setw(6) << iter->outAddress << "  ";
+        response << operType << " " << std::setw(2) << std::dec << iter->bytes << " ";
 
         for (auto it = iter->data.cbegin(); it != iter->data.cend(); it++) {
             response << " " << std::setw(2) << std::setfill('0') << std::hex << (int)(*it);
@@ -311,9 +323,21 @@ std::string MemoryUnit::describeQueuedOperations() {
     }
 
     if (pendingOperation.isValid()) {
+        std::string operType;
+        switch (pendingOperation.type) {
+            case MemoryOpInstructionRead:
+                operType = "I";
+                break;
+            case MemoryOpDataRead:
+                operType = "R";
+                break;
+            case MemoryOpDataWrite:
+                operType = "W";
+                break;
+        }
         response << std::endl << "p  ";
-        response << std::setw(8) << std::setfill('0') << std::hex << pendingOperation.inAddress << "  " << pendingOperation.outAddress << "  ";
-        response << pendingOperation.type << " " << std::setw(2) << std::dec << pendingOperation.bytes << " ";
+        response << std::setw(8) << std::setfill('0') << std::hex << pendingOperation.inAddress << "  " << std::setw(6) << pendingOperation.outAddress << "  ";
+        response << operType << " " << std::setw(2) << std::dec << pendingOperation.bytes << " ";
 
         for (auto it = pendingOperation.data.cbegin(); it != pendingOperation.data.cend(); it++) {
             response << " " << std::setw(2) << std::setfill('0') << std::hex << (int) (*it);
@@ -451,6 +475,19 @@ bool MemoryUnit::isKernelSegment(uint32_t address) {
     return getSegment(address) != MemorySegmentU0;
 }
 
+void MemoryUnit::loadTlb(uint32_t virtualAddress, uint16_t physicalAddress, uint16_t flags, uint32_t asid) {
+    std::vector<uint16_t> value(1);
+    value[0] = physicalAddress;
+
+    tlb.load(virtualAddress, asid, flags, value);
+}
+void MemoryUnit::expireTlb(uint32_t virtualAddress, uint32_t asid) {
+    tlb.flush(virtualAddress, asid);
+}
+void MemoryUnit::flushTlb() {
+    tlb.flush();
+}
+
 uint16_t MemoryUnit::isReadQueued(MemoryReadType type, uint32_t address, uint32_t asid) {
     MemoryOpType opType = type == InstructionRead ? MemoryOpInstructionRead : MemoryOpDataRead;
     for (auto op: queuedOperations) {
@@ -548,8 +585,11 @@ CacheCheck MemoryOperation::contains(CacheType _type, uint32_t _address, int _co
 
 MemoryCheck::MemoryCheck(CacheCheck check) {
     switch (check) {
-        case CacheContainsPartial:
-            result = MemoryCheckContainsPartial;
+        case CacheContainsLower:
+            result = MemoryCheckContainsLower;
+            break;
+        case CacheContainsUpper:
+            result = MemoryCheckContainsUpper;
             break;
         case CacheContainsSingle:
             result = MemoryCheckContainsSingle;

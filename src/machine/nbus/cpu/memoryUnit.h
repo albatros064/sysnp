@@ -47,14 +47,13 @@ enum MemoryReadType {
 enum MemoryOpType {
     MemoryOpInstructionRead,
     MemoryOpDataRead,
-    MemoryOpDataWrite,
-    MemoryOpWalkIn,
-    MemoryOpWalkOut
+    MemoryOpDataWrite
 };
 
 enum MemoryCheckResult {
     MemoryCheckContainsNone,
-    MemoryCheckContainsPartial,
+    MemoryCheckContainsLower,
+    MemoryCheckContainsUpper,
     MemoryCheckContainsSingle,
     MemoryCheckContainsSplit,
     MemoryCheckSegmentError,
@@ -91,7 +90,7 @@ struct MemoryOperation {
     bool committed = false;
 
     bool isValid() { return bytes > 0; }
-    bool isReady() { return bytes > 0 && committed; }
+    bool isReady() { return bytes > 1 && committed; }
     void invalidate() { bytes = 0; committed = false; }
 
     BusOperation getBusOperation();
@@ -124,6 +123,10 @@ class MemoryUnit {
         MemorySegment checkSegment(uint32_t, int);
         MemorySegment getSegment(uint32_t);
         bool isKernelSegment(uint32_t);
+
+        void loadTlb  (uint32_t, uint16_t, uint16_t, uint32_t);
+        void expireTlb(uint32_t, uint32_t);
+        void flushTlb ();
 
         std::string describeQueuedOperations();
         std::string listContents(std::stringstream &);

@@ -131,8 +131,12 @@ void N16R::clockDown() {
 }
 
 void N16R::fetchStage() {
+    if (halted) {
+        machine->debug(7, "Fetch is halted.");
+        return;
+    }
     if (stageRegisters[0].bubble) {
-        machine->debug(7, "Fetch bubble.");
+        machine->debug(7, "Fetch is bubble.");
         return;
     }
 
@@ -161,13 +165,24 @@ void N16R::fetchStage() {
         checkWord = nextWord;
     }
 
-    if (isKernelSegment(checkWord)) {
+    if (memoryUnit.isKernelSegment(checkWord)) {
         stage.privileged = true;
+        stage.privilegedRead = true;
+        stage.privilegedWrite = false;
     }
 
     auto memCheck = memoryUnit.check(MemoryOpInstructionRead, checkWord, 2, asid);
     if (memCheck.isException()) {
         // throw exception
+        if (memCheck.result == MemoryCheckNoPresent) {
+            stage.exceptionType = ExceptTlbFault;
+        }
+        else {
+            stage.exceptionType = ExceptProtFault;
+        }
+        stage.exception = true;
+        stage.exceptionAddress = checkWord;
+
         stageRegisters[0] = stage;
         return;
     }
@@ -208,13 +223,24 @@ void N16R::fetchStage() {
         if (opcode == 002 || opcode == 006 || opcode == 007 || opcode == 017) {
             stage.nextInstructionPointer = stage.instructionPointer + 4;
 
-            if (isKernelSegment(nextWord)) {
+            if (memoryUnit.isKernelSegment(nextWord)) {
                 stage.privileged = true;
+                stage.privilegedRead = true;
+                stage.privilegedWrite = false;
             }
 
             auto memCheck = memoryUnit.check(MemoryOpInstructionRead, nextWord, 2, asid);
             if (memCheck.isException()) {
                 // throw exception
+                if (memCheck.result == MemoryCheckNoPresent) {
+                    stage.exceptionType = ExceptTlbFault;
+                }
+                else {
+                    stage.exceptionType = ExceptProtFault;
+                }
+                stage.exception = true;
+                stage.exceptionAddress = nextWord;
+
                 stageRegisters[0] = stage;
                 return;
             }
@@ -244,6 +270,10 @@ void N16R::fetchStage() {
 }
 
 void N16R::decodeStage() {
+    if (halted) {
+        machine->debug(7, "Decode is halted.");
+        return;
+    }
     if (stageRegisters[1].bubble) {
         machine->debug(7, "Decode is bubble.");
         return;
@@ -382,10 +412,12 @@ void N16R::decodeStage() {
 
             case 050: // syscall
                 stage.commitOp = CommitSyscall;
+                isCustom = true;
                 break;
             case 051: // eret
                 stage.commitOp = CommitExceptionReturn;
                 isPrivileged = true;
+                isCustom = true;
                 break;
             case 053: // eret A
                 aRegBank = 020;
@@ -394,6 +426,29 @@ void N16R::decodeStage() {
                 isPrivileged = true;
                 isDouble = true;
                 aRegOnly = true;
+                break;
+
+            case 054: // hlt
+                stage.commitOp = CommitHalt;
+                isPrivileged = true;
+                isCustom = true;
+                break;
+
+            case 055: // ltlb
+                stage.commitOp = CommitLoadTlb;
+                isPrivileged = true;
+                isDouble = true;
+                break;
+            case 056: // xtlb
+                stage.commitOp = CommitExpireTlb;
+                isPrivileged = true;
+                isDouble = true;
+                aRegOnly = true;
+                break;
+            case 057: // ftlb
+                stage.commitOp = CommitFlushTlb;
+                isPrivileged = true;
+                isCustom = true;
                 break;
 
             case 072: // jalr D
@@ -660,6 +715,9 @@ void N16R::decodeStage() {
     }
 
     stage.privileged = stage.privileged || isPrivileged;
+    if (isPrivileged) {
+        stage.privilegedInstruction;
+    }
 
     stage.delayed = false;
     // Check register hazards
@@ -696,6 +754,10 @@ void N16R::decodeStage() {
 }
 
 void N16R::executeStage() {
+    if (halted) {
+        machine->debug(7, "Execute is halted.");
+        return;
+    }
     if (stageRegisters[2].bubble) {
         machine->debug(7, "Execute is bubble.");
         return;
@@ -805,9 +867,12 @@ void N16R::executeStage() {
             stage.execute[0] = stage.decode[2];
             stage.execute[1] = stage.decode[3];
             break;
-        case ExecuteNop: // just pass them through
+        case ExecuteNop: // just pass it all through
             stage.execute[0] = stage.decode[0];
             stage.execute[1] = stage.decode[1];
+            stage.execute[2] = stage.decode[2];
+            stage.execute[3] = stage.decode[3];
+            stage.execute[4] = stage.decode[4];
         default:
             break;
     }
@@ -816,6 +881,10 @@ void N16R::executeStage() {
 }
 
 void N16R::memoryStage() {
+    if (halted) {
+        machine->debug(7, "Memory is halted.");
+        return;
+    }
     if (stageRegisters[3].bubble) {
         machine->debug(7, "Memory is bubble.");
         return;
@@ -841,13 +910,25 @@ void N16R::memoryStage() {
 
     if (memCheck.isException()) {
         // throw exception
+        if (memCheck.result == MemoryCheckNoPresent) {
+            stage.exceptionType = ExceptTlbFault;
+        }
+        else {
+            stage.exceptionType = ExceptProtFault;
+        }
+        stage.exception = true;
+        stage.exceptionAddress = memoryAddress;
+
         stageRegisters[3] = stage;
         return;
     }
 
     if (stage.memoryOp == MemoryRead) {
         switch (memCheck.result) {
-            case MemoryCheckContainsPartial:
+            case MemoryCheckContainsLower:
+                memoryAddress = memoryAddress + stage.memoryBytes - 1;
+                // fall through
+            case MemoryCheckContainsUpper:
                 stage.memory[0] = 1;
                 // fall through
             case MemoryCheckContainsNone:
@@ -920,13 +1001,31 @@ void N16R::writeBackStage() {
 
     auto stage = stageRegisters[4];
 
-    if (hasInterrupts() && (registerFile[statusRegister] & 1)) {
+    // if we're halted, we always accept interrupts.
+    // if we aren't, we honor the code
+    if (hasInterrupts() && (halted || (registerFile[statusRegister] & 1))) {
         stage.exception = true;
         stage.exceptionType = ExceptInterrupt;
+        halted = false;
     }
     else if (stage.privileged && !isKernel()) {
         stage.exception = true;
-        stage.exceptionType = ExceptReservedInstruction;
+        if (stage.privilegedInstruction) {
+            stage.exceptionType = ExceptReservedInstruction;
+        }
+        else if (stage.privilegedRead) {
+            stage.exceptionType = ExceptIllegalLoad;
+        }
+        else if (stage.privilegedWrite) {
+            stage.exceptionType = ExceptIllegalStore;
+        }
+        else {
+            stage.exceptionType = ExceptReservedInstruction;
+        }
+    }
+
+    if (halted) {
+        return;
     }
 
     if (stage.commitOp == CommitSyscall) {
@@ -935,8 +1034,9 @@ void N16R::writeBackStage() {
     }
 
     if (stage.exception) {
-        uint32_t ipc = registerFile[ipcRegister];
-        ipc |= (registerFile[ipcRegister + 1] << 16);
+        uint32_t ipc = getRegisterDWord(ipcRegister);
+        //registerFile[ipcRegister];
+        //ipc |= (registerFile[ipcRegister + 1] << 16);
         stage.nextInstructionPointer = ipc;
         stage.altInstructionPointer = ipc;
         stageRegisters[4] = stage;
@@ -952,12 +1052,14 @@ void N16R::writeBackStage() {
         registerFile[statusRegister] = status;
 
         // store bad virtual address (later)
-        //registerFile[bvaRegister    ] = stage.regVals[0];
-        //registerFile[bvaRegister + 1] = stage.regVals[1];
+        setRegisterDWord(bvaRegister, stage.exceptionAddress);
+        //registerFile[bvaRegister    ] = stage.exceptionAddress & 0xffff;
+        //registerFile[bvaRegister + 1] = stage.exceptionAddress >> 16;
 
         // store excepting instruction pointer
-        registerFile[epcRegister    ] = stage.instructionPointer & 0xffff;
-        registerFile[epcRegister + 1] = stage.instructionPointer >> 16;
+        setRegisterDWord(epcRegister, stage.instructionPointer);
+        //registerFile[epcRegister    ] = stage.instructionPointer & 0xffff;
+        //registerFile[epcRegister + 1] = stage.instructionPointer >> 16;
 
         stageFlush(4);
         if (stage.commitOp == CommitWrite) {
@@ -967,74 +1069,100 @@ void N16R::writeBackStage() {
     }
 
     bool taken = false;
+    bool explicitFlush = false;
 
-    if (stage.commitOp == CommitNop) {
-        return;
-    }
-    else if (stage.commitOp == CommitExceptionReturn || stage.commitOp == CommitExceptionReturnJump) {
-        uint16_t status = registerFile[statusRegister];
-        status = (status & 0xff00) | ((status >> 2) & 0x003f);
-        registerFile[statusRegister] = status;
+    auto checkValue = stage.execute[0];
 
-        if (stage.commitOp == CommitExceptionReturnJump) {
+    bool zero     =  checkValue == 0;
+    bool negative = (checkValue & 0x8000) != 0;
+
+    switch (stage.commitOp) {
+        case CommitNop:
+            return;
+        case CommitExceptionReturn:
+        case CommitExceptionReturnJump:
+            {
+                uint16_t status = registerFile[statusRegister];
+                status = (status & 0xff00) | ((status >> 2) & 0x003f);
+                registerFile[statusRegister] = status;
+
+                if (stage.commitOp == CommitExceptionReturnJump) {
+                    taken = true;
+                    stage.altInstructionPointer = getDWord(0, stage.execute);
+                }
+            }
+            break;
+        case CommitJump:
             taken = true;
-            stage.altInstructionPointer = stage.execute[0];
-            stage.altInstructionPointer |= (stage.execute[1] << 16);
-        }
-    }
-    else if (stage.commitOp == CommitJump) {
-        taken = true;
-    }
-    else if (stage.commitOp == CommitWriteBack) {
-        int i = 0;
-        for (; i < 5; i++) {
-            if (stage.dstRegs[i] != StageRegister::emptyRegister) {
-                registerFile[stage.dstRegs[i]] = stage.execute[i];
+            break;
+        case CommitWriteBack:
+            {
+                int i = 0;
+                for (; i < 5; i++) {
+                    if (stage.dstRegs[i] != StageRegister::emptyRegister) {
+                        registerFile[stage.dstRegs[i]] = stage.execute[i];
+                    }
+                }
+                for (; i < 7; i++) {
+                    if (stage.dstRegs[i] != StageRegister::emptyRegister) {
+                        registerFile[stage.dstRegs[i]] = stage.memory[i - 5];
+                    }
+                }
             }
-        }
-        for (; i < 7; i++) {
-            if (stage.dstRegs[i] != StageRegister::emptyRegister) {
-                registerFile[stage.dstRegs[i]] = stage.memory[i - 5];
-            }
-        }
-    }
-    else if (stage.commitOp == CommitWrite) {
-        memoryUnit.commitOperation(stage.memory[0]);
-    }
-    else {
-        auto checkValue = stage.execute[0];
+            break;
+        case CommitWrite:
+            memoryUnit.commitOperation(stage.memory[0]);
+            break;
+        case CommitHalt:
+            halted = true;
+            break;
 
-        bool zero     =  checkValue == 0;
-        bool negative = (checkValue & 0x8000) != 0;
+        case CommitLoadTlb:
+            memoryUnit.loadTlb(
+                getDWord(0, stage.execute),
+                getDWord(2, stage.execute) >> 12,
+                getWord (2, stage.execute) & 0xfff,
+                getRegisterDWord(asidRegister)
+            );
+            explicitFlush = true;
+            break;
+        case CommitExpireTlb:
+            memoryUnit.expireTlb(
+                getDWord(0, stage.execute),
+                getRegisterDWord(asidRegister)
+            );
+            explicitFlush = true;
+            break;
+        case CommitFlushTlb:
+            memoryUnit.flushTlb();
+            explicitFlush = true;
+            break;
 
-        switch (stage.commitOp) {
-            case CommitDecideEQ:
-                taken = zero;
-                break;
-            case CommitDecideNE:
-                taken = !zero;
-                break;
-            case CommitDecideGT:
-                taken = !zero && !negative;
-                break;
-            case CommitDecideLE:
-                taken = zero || negative;
-                break;
-            case CommitDecideLT:
-                taken = negative;
-                break;
-            case CommitDecideGE:
-                taken = !negative;
-                break;
-            default:
-                taken = false;
-                break;
-        }
+        case CommitDecideEQ:
+            taken = zero;
+            break;
+        case CommitDecideNE:
+            taken = !zero;
+            break;
+        case CommitDecideGT:
+            taken = !zero && !negative;
+            break;
+        case CommitDecideLE:
+            taken = zero || negative;
+            break;
+        case CommitDecideLT:
+            taken = negative;
+            break;
+        case CommitDecideGE:
+            taken = !negative;
+            break;
+        default:
+            break;
     }
 
     stage.taken = taken;
 
-    if (taken) {
+    if (taken || explicitFlush) {
         stageFlush(4);
     }
 
@@ -1117,6 +1245,24 @@ bool N16R::isKernel() {
 bool N16R::hasInterrupts() {
     return (registerFile[causeRegister] & 0xff00) > 0;
 }
+
+uint16_t N16R::getWord(int reg, uint16_t* set) {
+    return set[reg];
+}
+uint32_t N16R::getDWord(int reg, uint16_t* set) {
+    uint32_t value = set[reg];
+    value |= set[reg + 1] << 16;
+
+    return value;
+}
+uint32_t N16R::getRegisterDWord(int reg) {
+    return getDWord(reg, registerFile);
+}
+void N16R::setRegisterDWord(int reg, uint32_t value) {
+    registerFile[reg    ] = value &  0xffff;
+    registerFile[reg + 1] = value >> 16;
+}
+
 
 std::string N16R::command(std::stringstream &input) {
     std::stringstream response;
@@ -1214,7 +1360,52 @@ std::string N16R::command(std::stringstream &input) {
             }
 
             if (iter->exception) {
-                response << " " << iter->exceptionType;
+                std::string exType;
+                switch (iter->exceptionType) {
+                    case ExceptInterrupt:
+                        exType = "Interrupt";
+                        break;
+                    case ExceptTlbFault:
+                        exType = "TlbFault";
+                        break;
+                    case ExceptProtFault:
+                        exType = "ProtFault";
+                        break;
+                    case ExceptIllegalLoad:
+                        exType = "IllegalLoad";
+                        break;
+                    case ExceptIllegalStore:
+                        exType = "IllegalStore";
+                        break;
+                    case ExceptIBus:
+                        exType = "IBus";
+                        break;
+                    case ExceptDBus:
+                        exType = "DBus";
+                        break;
+                    case ExceptSyscall:
+                        exType = "Syscall";
+                        break;
+                    case ExceptBreakpoint:
+                        exType = "Breakpoint";
+                        break;
+                    case ExceptReservedInstruction:
+                        exType = "ReservedInstruction";
+                        break;
+                    case ExceptInvalidInstruction:
+                        exType = "InvalidInstruction";
+                        break;
+                    case ExceptOverflow:
+                        exType = "Overflow";
+                        break;
+                    case ExceptNone:
+                        exType = "None";
+                        break;
+                    default:
+                        exType = "Unknown";
+                        break;
+                }
+                response << " " << exType;
             }
             response << std::endl;
         }
@@ -1250,6 +1441,8 @@ std::string N16R::command(std::stringstream &input) {
 }
 
 void N16R::reset() {
+    halted = false;
+
     StageRegister resetVector;
     resetVector.instructionPointer = resetAddress;
     resetVector.nextInstructionPointer = resetAddress;
@@ -1301,6 +1494,9 @@ void N16R::breakpointRemove(uint32_t addr) {
 StageRegister::StageRegister(): executeOp(ExecuteNop), memoryOp(MemoryNop), commitOp(CommitNop) {
     invalidate();
     privileged = false;
+    privilegedInstruction = false;
+    privilegedRead = false;
+    privilegedWrite = false;
     taken = false;
 }
 
