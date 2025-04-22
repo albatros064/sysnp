@@ -46,12 +46,14 @@ NBus::NBus() {
     signalMasks[NBusSignal::NotReady] = 1;
 }
 
-void NBus::init(const libconfig::Setting &setting) {
+void NBus::init(ryml::NodeRef &setting) {
     this->machine = machine;
-    const libconfig::Setting &devices = setting["devices"];
-    int deviceCount = devices.getLength();
+    auto devicesConfig = setting["devices"];
+    int deviceCount = devicesConfig.num_children();
     for (int i = 0; i < deviceCount; i++) {
-        deviceNames.push_back(devices[i]);
+        std::string deviceName;
+        devicesConfig[i] >> deviceName;
+        deviceNames.push_back(deviceName);
     }
 }
 void NBus::postInit() {

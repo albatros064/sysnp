@@ -50,7 +50,7 @@ class NBus : public Device , public std::enable_shared_from_this<NBus>  {
         void addInterface(std::shared_ptr<NBusInterface>);
         std::shared_ptr<NBusInterface> getIndependentInterface();
 
-        virtual void init(const libconfig::Setting &);
+        virtual void init(ryml::NodeRef&);
         virtual void postInit();
 
         virtual std::string command(std::stringstream&);

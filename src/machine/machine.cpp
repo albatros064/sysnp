@@ -1,4 +1,3 @@
-#include <libconfig.h++>
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -13,41 +12,31 @@
 
 namespace sysnp {
 
-bool Machine::load(std::string configFile) {
+bool Machine::load(ryml::NodeRef config) {
     debugLevel = -1;
+
     std::string rootDeviceName = "none";
-    try {
-        libconfig::Config config;
-        config.readFile(configFile.c_str());
 
-        const libconfig::Setting& configRoot = config.getRoot();
+    config["root"      ] >> rootDeviceName;
+    config["debugLevel"] >> debugLevel;
 
-        configRoot.lookupValue("root", rootDeviceName);
+    auto devicesConfig = config["devices"];
 
-        configRoot.lookupValue("debugLevel", debugLevel);
+    int deviceCount = devicesConfig.num_children();
+    for (int i = 0; i < deviceCount; i++) {
+        std::string moduleName;
+        auto deviceConfig = devicesConfig[i];
+        deviceConfig["module"] >> moduleName;
 
-        const libconfig::Setting& cDevices = configRoot["devices"];
-        int deviceCount = cDevices.getLength();
-        for (int i = 0; i < deviceCount; i++) {
-            std::string moduleName;
-            const libconfig::Setting& cDevice = cDevices[i];
-            cDevice.lookupValue("module", moduleName);
+        debug("Creating device type \"" + moduleName + "\"");
 
-            debug("Creating device type \"" + moduleName + "\"");
-
-            std::shared_ptr<Device> newDevice = createDevice(moduleName);
-            if (newDevice) {
-                debug("Initializing device type \"" + moduleName + "\"");
-                newDevice->setMachine(shared_from_this());
-                newDevice->init(cDevice);
-                devices[moduleName] = newDevice;
-            }
+        std::shared_ptr<Device> newDevice = createDevice(moduleName);
+        if (newDevice) {
+            debug("Initializing device type \"" + moduleName + "\"");
+            newDevice->setMachine(shared_from_this());
+            newDevice->init(deviceConfig);
+            devices[moduleName] = newDevice;
         }
-    }
-    catch (libconfig::ParseException e) {
-        debugLevel = 1;
-        debug(1, "Error in config file \"" + configFile + "\" on line " + std::to_string(e.getLine()) +  ": " + e.getError());
-        return false;
     }
 
     debug("PostInit phase");
@@ -69,7 +58,6 @@ bool Machine::load(std::string configFile) {
         }
     }
 
-    
     debug("Done loading");
 
     return true;

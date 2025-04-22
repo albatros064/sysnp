@@ -9,6 +9,10 @@
 #include <thread>
 #include <chrono>
 
+#include <ryml.hpp>
+#include <c4/std/string.hpp>
+
+
 #include "device.h"
 
 namespace sysnp {
@@ -25,7 +29,7 @@ class Machine : public std::enable_shared_from_this<Machine> {
 	Machine() { debugLevel = 0; }
 	virtual ~Machine() {}
 
-    bool load(std::string);
+    bool load(ryml::NodeRef);
 
     std::shared_ptr<Device> getDevice(std::string);
 

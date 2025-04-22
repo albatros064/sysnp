@@ -17,7 +17,7 @@ class Serial : public NBusDevice {
         Serial() {}
         virtual ~Serial();
 
-        virtual void init(const libconfig::Setting &);
+        virtual void init(ryml::NodeRef &);
         virtual void postInit();
 
         virtual void clockUp();

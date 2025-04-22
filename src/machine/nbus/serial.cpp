@@ -24,13 +24,12 @@ Serial::~Serial() {
     close(ttyHandle);
 }
 
-void Serial::init(const libconfig::Setting &setting) {
+void Serial::init(ryml::NodeRef &setting) {
     int intAssignment;
 
-    setting.lookupValue("tty", ttyFile);
-
-    setting.lookupValue("ioAddress", ioAddress);
-    setting.lookupValue("interrupt", intAssignment);
+    setting["tty"      ] >> ttyFile;
+    setting["ioAddress"] >> ioAddress;
+    setting["interrupt"] >> intAssignment;
 
     if (intAssignment == 0) {
         interrupt = NBusSignal::Interrupt0;

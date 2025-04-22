@@ -28,40 +28,42 @@ uint32_t e16s32(uint16_t in) {
     return out;
 }
 
-void N16R::init(const libconfig::Setting &setting) {
+void N16R::init(ryml::NodeRef &setting) {
     isPipelined = false;
-    setting.lookupValue("resetAddress", resetAddress);
-    setting.lookupValue("pipelined", isPipelined);
+    setting["resetAddress"] >> resetAddress;
+    setting["pipelined"   ] >> isPipelined;
 
-    const libconfig::Setting& cCacheC = setting["cache"];
-    const libconfig::Setting& cCaches = cCacheC["caches"];
-    const libconfig::Setting& cNoCache = cCacheC["noCache"];
+    auto cacheConfig    = setting["cache"];
+    auto cachesConfig   = cacheConfig["caches"];
+    auto noCachesConfig = cacheConfig["noCache"];
 
-    int regionCount = cNoCache.getLength();
+    int regionCount = noCachesConfig.num_children();
     for (int i = 0; i < regionCount; i++) {
-        const libconfig::Setting& cRegion = cNoCache[i];
+        auto regionConfig = noCachesConfig[i];
         int start = -1;
         int size = -1;
 
-        cRegion.lookupValue("start", start);
-        cRegion.lookupValue("size", size);
+        regionConfig["start"] >> start;
+        regionConfig["size" ] >> size;
 
         if (start >= 0) {
             memoryUnit.addNoCacheRegion(start, size);
         }
     }
 
-    int cacheCount = cCaches.getLength();
+    int cacheCount = cachesConfig.num_children();
     for (int i = 0; i < cacheCount; i++) {
-        const libconfig::Setting& cCache = cCaches[i];
+        auto cacheConfig = cachesConfig[i];
         std::string type;
         int binBits = 0;
         int lineBits = 0;
         int ways = 0;
-        cCache.lookupValue("type", type);
-        cCache.lookupValue("binBits", binBits);
-        cCache.lookupValue("lineBits", lineBits);
-        cCache.lookupValue("ways", ways);
+
+        cacheConfig["type"    ] >> type;
+        cacheConfig["binBits" ] >> binBits;
+        cacheConfig["lineBits"] >> lineBits;
+        cacheConfig["ways"    ] >> ways;
+
         memoryUnit.setCache(
             type == "data" ? DataCache : InstructionCache,
             32, // address bits

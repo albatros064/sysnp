@@ -1,0 +1,30 @@
+root: nbus
+debugLevel: 9
+devices:
+  - module: nbus
+    clock: 10000
+    device: 0x1f0000
+    devices: [n16r, memory, serial]
+  - module: n16r
+    multiplier: 1
+    pipelined: true
+    resetAddress: 0x80fe0000
+    cache:
+      caches:
+        - {type: data,        binBits: 5, lineBits: 4, ways: 2}
+        - {type: instruction, binBits: 5, lineBits: 4, ways: 2}
+      noCache:
+        - {start: 0xf00000, size : 0x040000}
+  - module: memory
+    device: 0x1f0010
+    ioHole: 0xf00000
+    ioHoleSize: 0x040000
+    ioAddress: 0xf00000
+    modules:
+      - {size: 4096, name:  "4MB RAM", start: 0x000000, rom: false,                   readLatency: 0, writeLatency: 1}
+      - {size:   64, name: "64KB ROM", start: 0xfe0000, rom: true,  file: "bios.bin", readLatency: 0, writeLatency: 0}
+  - module: serial
+    device: 0x1f0020
+    ioAddress: 0xf00010
+    interrupt: 1
+    tty: "./vtty"

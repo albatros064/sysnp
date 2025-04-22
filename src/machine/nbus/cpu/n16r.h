@@ -151,7 +151,7 @@ class N16R : public NBusDevice {
     public:
         virtual ~N16R() {}
 
-        virtual void init(const libconfig::Setting&);
+        virtual void init(ryml::NodeRef &);
         virtual void postInit();
 
         virtual void clockUp();

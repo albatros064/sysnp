@@ -9,9 +9,9 @@ namespace sysnp {
 
 namespace nbus {
 
-void Memory::init(const libconfig::Setting &setting) {
-    const libconfig::Setting &moduleConfig = setting["modules"];
-    int moduleCount = moduleConfig.getLength();
+void Memory::init(ryml::NodeRef &setting) {
+    auto modulesConfig = setting["modules"];
+    int moduleCount = modulesConfig.num_children();
     uint32_t    start;
     uint32_t    size;
     uint32_t readLatency;
@@ -20,27 +20,35 @@ void Memory::init(const libconfig::Setting &setting) {
     std::string name;
     std::string file;
 
-    setting.lookupValue("ioHole", ioHoleAddress);
-    setting.lookupValue("ioHoleSize", ioHoleSize);
+    setting["ioHole"] >> ioHoleAddress;
+    setting["ioHoleSize"] >> ioHoleSize;
 
-    uint32_t capacity = 0;
+    uint32_t ramCapacity = 0;
+    uint32_t romCapacity = 0;
     for (int i = 0; i < moduleCount; i++) {
-        const libconfig::Setting &module = moduleConfig[i];
-        module.lookupValue("start",         start);
-        module.lookupValue("name",          name);
-        module.lookupValue("size",          size);
-        module.lookupValue("rom",           rom);
-        module.lookupValue("file",          file);
-        module.lookupValue("readLatency",   readLatency);
-        module.lookupValue("writeLatency",  writeLatency);
+        auto moduleConfig = modulesConfig[i];
+        moduleConfig["start"] >> start;
+        moduleConfig["name" ] >> name;
+        moduleConfig["size" ] >> size;
+        moduleConfig["rom"  ] >> rom;
+        if (rom) {
+            moduleConfig["file"] >> file;
+        }
+        moduleConfig["readLatency"] >> readLatency;
+        moduleConfig["writeLatency"] >> writeLatency;
 
         modules.push_back(std::make_shared<MemoryModule>(start, size * 1024, rom, file, readLatency, writeLatency, name));
 
-        capacity += size;
+        if (rom) {
+            romCapacity += size;
+        }
+        else {
+            ramCapacity += size;
+        }
     }
 
     machine->debug("Memory::init()");
-    machine->debug(" Found " + std::to_string(moduleCount) + " modules for " + std::to_string(capacity) + "KB");
+    machine->debug(" Found " + std::to_string(moduleCount) + " modules for " + std::to_string(ramCapacity) + "KB RAM, " + std::to_string(romCapacity) + "KB ROM");
 }
 
 void Memory::postInit() {

@@ -1,7 +1,6 @@
 #ifndef SYSNP_DEVICE_H
 #define SYSNP_DEVICE_H
 
-#include <libconfig.h++>
 #include <string>
 #include <memory>
 #include "machine.h"
@@ -12,7 +11,7 @@ class Machine;
 
 class Device {
     public:
-        virtual void init(const libconfig::Setting &) =0;
+        virtual void init(ryml::NodeRef &) =0;
         virtual void postInit() =0;
 
         virtual void clockUp  () =0;

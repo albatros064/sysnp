@@ -22,16 +22,16 @@ BOOST_AUTO_TEST_CASE(memoryModule) {
 }
 
 BOOST_AUTO_TEST_CASE(memory, * boost::unit_test::depends_on("NBus/nbus")) {
-    libconfig::Config config;
-    config.readString("module = \"memory\";device = 0x1f0010;\
-        ioHole     = 0xf00000;\
-        ioHoleSize = 0x040000;\
-        ioAddress  = 0xf00000;\
-        modules: ({\
-            size = 4096;name = \"4MB RAM\";start = 0x000000;\
-            rom = false;readLatency = 0;writeLatency = 1;\
-    });");
-    const libconfig::Setting& memoryConfig = config.getRoot();
+    char config[] = "module: memory\n\
+device: 0x1f0010\n\
+ioHole: 0xf00000\n\
+ioHoleSize: 0x040000\n\
+ioAddress: 0xf00000\n\
+modules:\n\
+  - {size: 4096, name: \"4MB RAM\", start: 0x000000, rom: false, readLatency: 0, writeLatency: 1}\n\
+  - {size: 64, name: \"64KB ROM\", start: 0xfe0000, rom: true, file: \"bios.bin\", readLatency: 0, writeLatency: 0}";
+    auto tree = ryml::parse_in_place(config);
+    auto memoryConfig = tree.rootref();
 
     auto machine = std::make_shared<sysnp::Machine>();
 
