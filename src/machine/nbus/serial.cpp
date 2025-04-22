@@ -142,11 +142,12 @@ void Serial::clockUp() {
             break;
     }
 
-    if (hasInData || (lastOutData != hasOutData)) {
+    bool newOutData = hasOutData;
+    if (hasInData || (lastOutData && !newOutData)) {
         machine->debug(6, "Serial::clockUp() Interrupting");
         interface->assertSignal(interrupt, 1);
     }
-    lastOutData = hasOutData;
+    lastOutData = newOutData;
 }
 
 void Serial::clockDown() {
@@ -175,6 +176,7 @@ void Serial::clockDown() {
 
                 outData = (uint8_t) data & 0xff;
                 hasOutData = true;
+                lastOutData = true;
 
                 outDataMutex.unlock();
             }
@@ -247,10 +249,21 @@ void Serial::ttyRead() {
 }
 
 void Serial::ttyWrite() {
+    bool hasSendData = false;
+    uint8_t sendData;
+
+    outDataMutex.lock();
     if (hasOutData) {
-        machine->debug(6, "Serial byte written");
-        write(ttyHandle, &outData, 1);
+        sendData = outData;
+        hasSendData = true;
+
         hasOutData = false;
+    }
+    outDataMutex.unlock();
+
+    if (hasSendData) {
+        machine->debug(6, "Serial byte written");
+        write(ttyHandle, &sendData, 1);
     }
 }
 

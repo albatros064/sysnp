@@ -1,7 +1,8 @@
 target_sources(test
     PRIVATE
         test_main.cpp
-        caches.cpp
         nbus.cpp
         memory.cpp
+        serial.cpp
 )
+add_subdirectory(cpu)

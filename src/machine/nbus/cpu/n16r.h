@@ -15,8 +15,8 @@ namespace n16r {
 
 enum ExceptionType {
     ExceptInterrupt           = 000,
-    // Vmem
-    // Vmem
+    ExceptTlbFault,
+    ExceptProtFault,
     // Vmem
     ExceptIllegalLoad         = 004,
     ExceptIllegalStore,
@@ -77,6 +77,12 @@ enum CommitOp {
     CommitDecideLT,
     CommitDecideGE,
 
+    CommitHalt,
+
+    CommitLoadTlb,
+    CommitExpireTlb,
+    CommitFlushTlb,
+
     CommitSyscall,
     CommitExceptionReturn,
     CommitExceptionReturnJump
@@ -111,6 +117,8 @@ class StageRegister {
         uint8_t  srcRegs[5];
         uint8_t  dstRegs[7];
 
+        uint32_t getQWord(int, uint16_t*);
+
         ExecuteOp executeOp;
         MemoryOp  memoryOp;
         CommitOp  commitOp;
@@ -122,12 +130,16 @@ class StageRegister {
         bool flushOnCommit;
 
         bool privileged;
-        bool memoryPrivileged;
+        bool privilegedInstruction;
+        bool privilegedRead;
+        bool privilegedWrite;
         bool delayed;
         bool bubble;
         bool taken;
+
         bool exception;
         ExceptionType exceptionType;
+        uint32_t exceptionAddress;
 
         OperandHazard checkOperandHazard(uint8_t, uint8_t);
         uint16_t operandForward(uint8_t, uint8_t);
@@ -162,6 +174,12 @@ class N16R : public NBusDevice {
         const static uint8_t bvaRegister = 44;
         const static uint8_t epcRegister = 46;
 
+        uint32_t getRegisterDWord(int);
+        void     setRegisterDWord(int, uint32_t);
+
+        uint16_t getWord (int, uint16_t*);
+        uint32_t getDWord(int, uint16_t*);
+
         std::vector<StageRegister> stageRegisters;
         std::vector<StageRegister> stageRegistersOut;
         std::set<uint8_t> registerHazards;
@@ -181,6 +199,8 @@ class N16R : public NBusDevice {
 
         uint32_t resetAddress;
         bool isPipelined;
+
+        bool halted;
 
         bool isKernel();
         bool hasInterrupts();

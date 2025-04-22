@@ -5,7 +5,7 @@ addressableWidth = 8;
 segments = (
     {
         name = "ktext";
-        start = 0xfe0000;
+        start = 0x80fe0000;
         size = 65536;
         fill = true;
         ephemeral = false;
@@ -13,7 +13,7 @@ segments = (
     },
     {
         name = "kmem";
-        start = 0x0f0000;
+        start = 0x800f0000;
         size = 65536;
         fill = false;
         ephemeral = true;
@@ -420,6 +420,21 @@ instructions = (
     },
 
     {
+        mnemonic = "mult";
+        format = "R";
+        opcode = "0";
+        function = "48";
+        fragments = [ "dreg4", ":,", "sreg0" ];
+    },
+    {
+        mnemonic = "multu";
+        format = "R";
+        opcode = "0";
+        function = "49";
+        fragments = [ "dreg4", ":,", "sreg0" ];
+    },
+
+    {
         mnemonic = "and";
         format = "R";
         opcode = "0";
@@ -777,6 +792,30 @@ instructions = (
         format = "R";
         opcode = "0";
         function = "44";
+        dreg0 = "0";
+        sreg0 = "0";
+        fragments = [];
+    },
+    {
+        mnemonic = "ltlb";
+        format = "R";
+        opcode = "0";
+        function = "45";
+        fragments = [ "dreg4", ":,", "sreg4" ];
+    },
+    {
+        mnemonic = "ftlb";
+        format = "R";
+        opcode = "0";
+        function = "46";
+        sreg0 = "0";
+        fragments = [ "dreg4" ]
+    },
+    {
+        mnemonic = "ftlb";
+        format = "R";
+        opcode = "0";
+        function = "47";
         dreg0 = "0";
         sreg0 = "0";
         fragments = [];

@@ -13,7 +13,8 @@ namespace n16r {
 
 enum CacheCheck {
     CacheContainsNone,
-    CacheContainsPartial,
+    CacheContainsLower,
+    CacheContainsUpper,
     CacheContainsSingle,
     CacheContainsSplit
 };
@@ -26,10 +27,10 @@ class Cache {
     public:
         Cache() {}
         Cache(int _binBits, int _lineBits, int _wayBits, bool _singleValue, int _dirtyFlag, int _presentFlag):
-                binBits(_binBits), lineBits(_lineBits), wayBits(_wayBits), singleValue(singleValue),
+                binBits(_binBits), lineBits(_lineBits), wayBits(_wayBits), singleValue(_singleValue),
                 dirtyFlag(_dirtyFlag), presentFlag(_presentFlag),
                 tagMask(0), binMask(0), lineMask(0) {
-            contentCount = _singleValue ? 1 : (1 << lineBits);
+            contentCount = singleValue ? 1 : (1 << lineBits);
 
             wayCount = 1 << wayBits;
             int addressBits = sizeof(A) * 8;
@@ -49,7 +50,7 @@ class Cache {
             tag     .resize(entryCount, 0);
             lru     .resize(entryCount, 0);
             meta    .resize(entryCount);
-            flag    .resize(entryCount);
+            flag    .resize(entryCount, 0);
             content .resize(entryCount * contentCount);
 
             tag     .shrink_to_fit();
@@ -92,8 +93,11 @@ class Cache {
                 if (startFound && endFound) {
                     return CacheContainsSplit;
                 }
-                else if (startFound || endFound) {
-                    return CacheContainsPartial;
+                else if (startFound) {
+                    return CacheContainsLower;
+                }
+                else if (endFound) {
+                    return CacheContainsUpper;
                 }
             }
 
@@ -169,6 +173,7 @@ class Cache {
             if (!singleValue) {
                 lineStartIndex <<= lineBits;
             }
+
             for (int i = 0; i < contentCount && i < values.size(); i++) {
                 content[lineStartIndex + i] = values[i];
             }
@@ -265,7 +270,7 @@ class Cache {
             if (presentFlag >= 0) {
                 F flagMask = (1 << presentFlag);
                 for (int i = 0; i < wayCount; i++) {
-                    if (flag[binNum + i] & flagMask) {
+                    if (!(flag[binNum + i] & flagMask)) {
                         return i;
                     }
                 }
@@ -285,6 +290,21 @@ class Cache {
 
             int offset = binNumber(address) + line;
             return (flag[offset] & (1 << dirtyFlag)) > 0;
+        }
+
+        void flush(A address, M metaValue) {
+            int binNum = binNumber(address);
+            A addressTag = address & tagMask;
+            for (int i = 0; i < wayCount; i++) {
+                if (tag[binNum + i] == addressTag && meta[binNum + i] == metaValue) {
+                    flag[binNum + i] = 0;
+                }
+            }
+        }
+        void flush() {
+            for (int i = 0; i < flag.size(); i++) {
+                flag[i] = 0;
+            }
         }
 
     private:
